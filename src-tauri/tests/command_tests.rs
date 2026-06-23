@@ -112,6 +112,46 @@ fn commands_get_conversations_library_and_conversation_pages() {
 }
 
 #[test]
+fn commands_conversation_cache_invalidates_when_export_file_changes() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let first = state
+        .get_conversation_response(
+            Some(export_id.clone()),
+            "conv-1".to_string(),
+            Some(0),
+            Some(1),
+        )
+        .unwrap();
+    assert_eq!(first.messages[0].text, "Please make an image");
+
+    let conversations_file = fixture
+        .root
+        .path()
+        .join("chatgpt-export-good")
+        .join("conversations.json");
+    let mut conversations: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&conversations_file).unwrap()).unwrap();
+    conversations[0]["mapping"]["msg1"]["message"]["content"]["parts"][0] =
+        json!("Changed image prompt");
+    write_json(&conversations_file, &conversations);
+
+    state
+        .refresh_index_response(Some(export_id.clone()))
+        .unwrap();
+    let updated = state
+        .get_conversation_response(Some(export_id), "conv-1".to_string(), Some(0), Some(1))
+        .unwrap();
+    assert_eq!(updated.messages[0].text, "Changed image prompt");
+}
+
+#[test]
 fn commands_refresh_index_rebuilds_single_and_all_exports() {
     let fixture = make_command_fixture();
     let state = AppState::new_with_app_data(

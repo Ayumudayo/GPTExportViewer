@@ -15,13 +15,16 @@ assert.ok(packageJson.dependencies["@tauri-apps/plugin-dialog"], "@tauri-apps/pl
 assert.ok(packageJson.devDependencies["@tauri-apps/cli"], "@tauri-apps/cli should be a dev dependency");
 
 assert.equal(tauriConfig.productName, "GPTExportManager");
-assert.equal(tauriConfig.identifier, "local.gpt-export-manager.app");
+assert.equal(tauriConfig.identifier, "local.gpt-export-manager");
 assert.equal(tauriConfig.build.beforeDevCommand, "npm run dev");
 assert.equal(tauriConfig.build.devUrl, "http://127.0.0.1:5174");
 assert.equal(tauriConfig.build.beforeBuildCommand, "npm run build");
 assert.equal(tauriConfig.build.frontendDist, "../dist");
 assert.equal(tauriConfig.bundle.windows.webviewInstallMode.type, "skip");
 assert.equal(tauriConfig.bundle.windows.minimumWebview2Version, "110.0.1531.0");
+assert.notEqual(tauriConfig.app.security.csp, null, "Desktop build should not disable CSP");
+assert.match(tauriConfig.app.security.csp, /connect-src ipc: http:\/\/ipc\.localhost/, "CSP should allow Tauri IPC");
+assert.match(tauriConfig.app.security.csp, /gpt-export-asset:/, "CSP should allow the private asset protocol");
 
 assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on tauri-plugin-dialog");
 assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");

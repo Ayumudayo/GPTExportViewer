@@ -263,6 +263,21 @@ fn library_asset_resolution_rejects_invalid_ids_and_sanitizes_missing_assets() {
 }
 
 #[test]
+fn library_asset_resolution_rejects_linked_assets() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let outside = fixture.root.path().join("outside.png");
+    fs::write(&outside, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).unwrap();
+    std::fs::hard_link(&outside, fixture.good.join("file-img-linked.dat")).unwrap();
+
+    let error = library::assets::resolve_asset(&export_item, "file-img-linked", &[])
+        .unwrap_err()
+        .code()
+        .to_string();
+    assert_eq!(error, "asset_not_found");
+}
+
+#[test]
 fn library_mime_sniffing_detects_common_image_types() {
     let fixture = make_export_fixture();
     assert_eq!(

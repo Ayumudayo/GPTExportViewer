@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use sha1::{Digest, Sha1};
 
-use crate::cache::{read_json, write_json_atomic};
+use crate::cache::{file_fingerprint, read_json, write_json_atomic, FileFingerprint};
 use crate::errors::AppResult;
 use crate::fs_guards::safe_cache_name;
 use crate::models::{Conversation, ExportItem, MessageRange};
@@ -17,7 +17,9 @@ pub fn load_conversation(
     start: usize,
     limit: usize,
 ) -> AppResult<Option<Conversation>> {
-    let cache_file = conversation_cache_path(cache_dir, &export_item.id, conversation_id);
+    let fingerprint = file_fingerprint(&export_item.paths.conversations)?;
+    let cache_file =
+        conversation_cache_path(cache_dir, &export_item.id, conversation_id, &fingerprint);
     let normalized = match read_json::<Conversation>(&cache_file)? {
         Some(conversation) => conversation,
         None => {
@@ -58,10 +60,19 @@ pub fn load_conversation(
     Ok(Some(page))
 }
 
-fn conversation_cache_path(cache_dir: &Path, export_id: &str, conversation_id: &str) -> PathBuf {
+fn conversation_cache_path(
+    cache_dir: &Path,
+    export_id: &str,
+    conversation_id: &str,
+    fingerprint: &FileFingerprint,
+) -> PathBuf {
     let digest = {
         let mut hasher = Sha1::new();
         hasher.update(conversation_id.as_bytes());
+        hasher.update(fingerprint.path.to_string_lossy().as_bytes());
+        hasher.update(fingerprint.size.unwrap_or_default().to_le_bytes());
+        hasher.update(fingerprint.mtime_ms.unwrap_or_default().to_le_bytes());
+        hasher.update([u8::from(fingerprint.missing)]);
         format!("{:x}", hasher.finalize())[..16].to_string()
     };
     cache_dir
