@@ -5,6 +5,7 @@ const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const tauriConfig = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
 const cargoToml = await readFile("src-tauri/Cargo.toml", "utf8");
 const libRs = await readFile("src-tauri/src/lib.rs", "utf8");
+const mainRs = await readFile("src-tauri/src/main.rs", "utf8");
 const readme = await readFile("README.md", "utf8");
 const handoff = await readFile("docs/HANDOFF.md", "utf8");
 
@@ -27,6 +28,8 @@ assert.match(tauriConfig.app.security.csp, /connect-src ipc: http:\/\/ipc\.local
 assert.match(tauriConfig.app.security.csp, /gpt-export-asset:/, "CSP should allow the private asset protocol");
 
 assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on tauri-plugin-dialog");
+assert.match(mainRs, /windows_subsystem\s*=\s*"windows"/, "Release desktop exe should use the Windows GUI subsystem");
+assert.match(mainRs, /not\(debug_assertions\)/, "Windows GUI subsystem should be scoped to release builds");
 assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");
 assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe commands");
 assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
