@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::errors::{io_error, AppError, AppResult};
 use crate::fs_guards::resolve_absolute;
 
@@ -29,4 +31,18 @@ pub fn ensure_app_data_dir(app_name: &str) -> AppResult<PathBuf> {
     let dir = app_data_dir(app_name)?;
     std::fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
     Ok(dir)
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSettings {
+    pub source_root: Option<PathBuf>,
+}
+
+pub fn read_runtime_settings(settings_path: &Path) -> AppResult<RuntimeSettings> {
+    Ok(crate::cache::read_json(settings_path)?.unwrap_or_default())
+}
+
+pub fn write_runtime_settings(settings_path: &Path, settings: &RuntimeSettings) -> AppResult<()> {
+    crate::cache::write_json_atomic(settings_path, settings)
 }

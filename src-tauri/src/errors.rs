@@ -10,6 +10,8 @@ pub enum AppError {
     InvalidFileId,
     #[error("Asset file not found")]
     AssetNotFound,
+    #[error("Conversation not found")]
+    ConversationNotFound,
     #[error("Resolved path escapes export root")]
     PathEscapesRoot,
     #[error("Parse failed: {0}")]
@@ -30,6 +32,7 @@ impl AppError {
             Self::ExportNotFound => "export_not_found",
             Self::InvalidFileId => "invalid_file_id",
             Self::AssetNotFound => "asset_not_found",
+            Self::ConversationNotFound => "conversation_not_found",
             Self::PathEscapesRoot => "path_escapes_root",
             Self::ParseFailed(_) => "parse_failed",
             Self::CacheUnavailable(_) => "cache_unavailable",
@@ -47,8 +50,24 @@ impl serde::Serialize for AppError {
 
         let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("code", self.code())?;
-        map.serialize_entry("message", &self.to_string())?;
+        map.serialize_entry("message", &self.public_message())?;
         map.end()
+    }
+}
+
+impl AppError {
+    fn public_message(&self) -> String {
+        match self {
+            Self::InvalidSourceRoot(reason) => format!("Invalid source root: {reason}"),
+            Self::ExportNotFound => "Export not found".to_string(),
+            Self::InvalidFileId => "Invalid file id".to_string(),
+            Self::AssetNotFound => "Asset file not found".to_string(),
+            Self::ConversationNotFound => "Conversation not found".to_string(),
+            Self::PathEscapesRoot => "Resolved path escapes export root".to_string(),
+            Self::ParseFailed(_) => "Parse failed".to_string(),
+            Self::CacheUnavailable(_) => "Cache unavailable".to_string(),
+            Self::Io { .. } => "I/O error".to_string(),
+        }
     }
 }
 

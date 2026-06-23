@@ -1,5 +1,6 @@
 pub mod asset_protocol;
 pub mod cache;
+pub mod commands;
 pub mod conversations;
 pub mod errors;
 pub mod exports;
@@ -12,176 +13,106 @@ pub mod state;
 pub mod time;
 pub mod webview2;
 
-use serde::Serialize;
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Settings {
-    source_root: Option<String>,
-    cache_dir: Option<String>,
-    export_count: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SettingsResponse {
-    settings: Settings,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportsResponse {
-    exports: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Page {
-    cursor: usize,
-    limit: usize,
-    total: usize,
-    next_cursor: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PagedResponse {
-    export: Option<serde_json::Value>,
-    items: Vec<serde_json::Value>,
-    page: Page,
-    stats: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConversationResponse {
-    id: String,
-    title: String,
-    total_messages: usize,
-    messages: Vec<serde_json::Value>,
-    range: serde_json::Value,
-}
-
-#[tauri::command]
-async fn get_exports() -> ExportsResponse {
-    ExportsResponse { exports: vec![] }
-}
-
-#[tauri::command]
-async fn get_settings() -> SettingsResponse {
-    SettingsResponse {
-        settings: Settings {
-            source_root: None,
-            cache_dir: None,
-            export_count: 0,
-        },
-    }
-}
-
-#[tauri::command]
-async fn update_settings(source_root: String) -> serde_json::Value {
-    serde_json::json!({
-        "settings": {
-            "sourceRoot": source_root,
-            "cacheDir": null,
-            "exportCount": 0
-        },
-        "exports": []
-    })
-}
-
-#[tauri::command]
-async fn get_stats(_export_id: Option<String>) -> serde_json::Value {
-    serde_json::json!({
-        "export": null,
-        "conversations": {},
-        "library": {},
-        "cache": { "hit": false, "dir": null }
-    })
-}
-
-#[tauri::command]
-async fn get_conversations(
-    _export_id: Option<String>,
-    _query: Option<String>,
-    _filter: Option<String>,
-    cursor: Option<usize>,
-    limit: Option<usize>,
-) -> PagedResponse {
-    empty_page(cursor.unwrap_or(0), limit.unwrap_or(80))
-}
-
-#[tauri::command]
-async fn get_library(
-    _export_id: Option<String>,
-    _query: Option<String>,
-    _filter: Option<String>,
-    cursor: Option<usize>,
-    limit: Option<usize>,
-) -> PagedResponse {
-    empty_page(cursor.unwrap_or(0), limit.unwrap_or(120))
-}
-
-#[tauri::command]
-async fn get_conversation(
-    _export_id: Option<String>,
-    conversation_id: String,
-    start: Option<usize>,
-    limit: Option<usize>,
-) -> ConversationResponse {
-    ConversationResponse {
-        id: conversation_id,
-        title: "Conversation".to_string(),
-        total_messages: 0,
-        messages: vec![],
-        range: serde_json::json!({
-            "start": start.unwrap_or(0),
-            "limit": limit.unwrap_or(120),
-            "total": 0,
-            "nextStart": null
-        }),
-    }
-}
-
-#[tauri::command]
-async fn refresh_index(_export_id: Option<String>) -> serde_json::Value {
-    serde_json::json!({ "indexed": [] })
-}
-
-fn empty_page(cursor: usize, limit: usize) -> PagedResponse {
-    PagedResponse {
-        export: None,
-        items: vec![],
-        page: Page {
-            cursor,
-            limit,
-            total: 0,
-            next_cursor: None,
-        },
-        stats: serde_json::json!({}),
-    }
-}
-
 pub fn run() {
     if let Err(error) = webview2::preflight_webview2_runtime() {
         show_startup_error(&error.to_string());
         return;
     }
 
+    let app_state = match state::AppState::new("GPTExportManager", Some(default_source_root())) {
+        Ok(state) => state,
+        Err(error) => {
+            show_startup_error(&error.to_string());
+            return;
+        }
+    };
+    let protocol_state = app_state.clone();
+
     tauri::Builder::default()
+        .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("gpt-export-asset", move |_ctx, request| {
+            asset_response(&protocol_state, request.uri().to_string())
+        })
         .invoke_handler(tauri::generate_handler![
-            get_exports,
-            get_settings,
-            update_settings,
-            get_stats,
-            get_conversations,
-            get_library,
-            get_conversation,
-            refresh_index
+            commands::get_exports,
+            commands::get_settings,
+            commands::update_settings,
+            commands::get_stats,
+            commands::get_conversations,
+            commands::get_library,
+            commands::get_conversation,
+            commands::refresh_index
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTExportManager");
+}
+
+fn default_source_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(r"E:\OpenAI\Exports")
+}
+
+fn asset_response(state: &state::AppState, uri: String) -> tauri::http::Response<Vec<u8>> {
+    match asset_protocol::parse_asset_url(&uri)
+        .and_then(|parsed| state.read_asset_payload(&parsed.export_id, &parsed.file_id))
+    {
+        Ok(asset) => tauri::http::Response::builder()
+            .status(tauri::http::StatusCode::OK)
+            .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)
+            .header(
+                tauri::http::header::CONTENT_LENGTH,
+                asset.bytes.len().to_string(),
+            )
+            .header(
+                tauri::http::header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{}\"", header_filename(&asset.file_name)),
+            )
+            .header("x-content-type-options", "nosniff")
+            .header(tauri::http::header::CACHE_CONTROL, "private, max-age=3600")
+            .body(asset.bytes)
+            .expect("valid asset response"),
+        Err(error) => {
+            let status = match error {
+                errors::AppError::InvalidFileId | errors::AppError::PathEscapesRoot => {
+                    tauri::http::StatusCode::BAD_REQUEST
+                }
+                errors::AppError::ExportNotFound | errors::AppError::AssetNotFound => {
+                    tauri::http::StatusCode::NOT_FOUND
+                }
+                _ => tauri::http::StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            tauri::http::Response::builder()
+                .status(status)
+                .header(
+                    tauri::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )
+                .header("x-content-type-options", "nosniff")
+                .body(status_text(status).as_bytes().to_vec())
+                .expect("valid error response")
+        }
+    }
+}
+
+fn status_text(status: tauri::http::StatusCode) -> &'static str {
+    match status {
+        tauri::http::StatusCode::BAD_REQUEST => "invalid asset request",
+        tauri::http::StatusCode::NOT_FOUND => "asset not found",
+        _ => "asset unavailable",
+    }
+}
+
+fn header_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(windows)]

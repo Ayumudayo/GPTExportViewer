@@ -173,3 +173,102 @@ pub struct ResolvedAsset {
     pub mime_type: String,
     pub size: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicExport {
+    pub id: String,
+    pub name: String,
+    pub modified_at: String,
+    pub has_conversations: bool,
+    pub has_library_files: bool,
+    pub has_asset_names: bool,
+    pub warnings: Vec<String>,
+}
+
+impl From<&ExportItem> for PublicExport {
+    fn from(value: &ExportItem) -> Self {
+        Self {
+            id: value.id.clone(),
+            name: value.name.clone(),
+            modified_at: value.modified_at.clone(),
+            has_conversations: value.has_conversations,
+            has_library_files: value.has_library_files,
+            has_asset_names: value.has_asset_names,
+            warnings: value.warnings.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicSettings {
+    pub source_root: Option<PathBuf>,
+    pub cache_dir: PathBuf,
+    pub export_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsResponse {
+    pub settings: PublicSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportsResponse {
+    pub exports: Vec<PublicExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSettingsResponse {
+    pub settings: PublicSettings,
+    pub exports: Vec<PublicExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStatus {
+    pub hit: bool,
+    pub dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsResponse {
+    pub export: PublicExport,
+    pub conversations: ConversationStats,
+    pub library: LibraryStats,
+    pub cache: CacheStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PagedResponse<T, S> {
+    pub export: PublicExport,
+    pub items: Vec<T>,
+    pub page: Page,
+    pub stats: S,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryResponseItem {
+    #[serde(flatten)]
+    pub item: LibraryItem,
+    pub asset_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshIndexItem {
+    pub export_id: String,
+    pub cache_hit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshIndexResponse {
+    pub indexed: Vec<RefreshIndexItem>,
+}

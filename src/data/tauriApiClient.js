@@ -38,15 +38,15 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
     },
 
     async fetchConversations({ exportId, query = "", filter = "all", cursor = 0, limit = 50 }) {
-      return normalizePagedResponse(await invoke(COMMANDS.fetchConversations, { exportId, query, filter, cursor, limit }));
+      return normalizePagedResponse(await invoke(COMMANDS.fetchConversations, { exportId, query, filter, ...paginationArgs(cursor, limit) }));
     },
 
     async fetchConversation({ exportId, conversationId, start = 0, limit = 100 }) {
-      return invoke(COMMANDS.fetchConversation, { exportId, conversationId, start, limit });
+      return invoke(COMMANDS.fetchConversation, { exportId, conversationId, start: numericArg(start, 0), limit: numericArg(limit, 100) });
     },
 
     async fetchLibrary({ exportId, query = "", filter = "all", cursor = 0, limit = 80 }) {
-      return normalizePagedResponse(await invoke(COMMANDS.fetchLibrary, { exportId, query, filter, cursor, limit }));
+      return normalizePagedResponse(await invoke(COMMANDS.fetchLibrary, { exportId, query, filter, ...paginationArgs(cursor, limit) }));
     },
 
     async refreshIndex({ exportId } = {}) {
@@ -100,6 +100,18 @@ function normalizePagedResponse(payload) {
     page: payload.page ?? { cursor: 0, limit: 0, total: payload.items?.length ?? 0, nextCursor: null },
     stats: payload.stats ?? {}
   };
+}
+
+function paginationArgs(cursor, limit) {
+  return {
+    cursor: numericArg(cursor, 0),
+    limit: numericArg(limit, 50)
+  };
+}
+
+function numericArg(value, fallback) {
+  const number = Number.parseInt(value, 10);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 function defaultClient() {

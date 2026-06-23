@@ -55,5 +55,9 @@ assert.deepEqual(await client.fetchConversations({ exportId: "exp", limit: 10 })
   stats: {}
 });
 assert.equal(calls.some((call) => call.command === "get_conversations"), true);
+await client.fetchLibrary({ exportId: "exp", cursor: "12", limit: "10" });
+const libraryCall = calls.findLast((call) => call.command === "get_library");
+assert.equal(libraryCall.args.cursor, 12);
+assert.equal(libraryCall.args.limit, 10);
 
 console.log("api client contract tests passed");

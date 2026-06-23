@@ -4,6 +4,8 @@ use crate::errors::{AppError, AppResult};
 use crate::fs_guards::assert_safe_file_id;
 
 const ASSET_SCHEME_PREFIX: &str = "gpt-export-asset://library/";
+const WINDOWS_HTTP_PREFIX: &str = "http://gpt-export-asset.localhost/library/";
+const WINDOWS_HTTPS_PREFIX: &str = "https://gpt-export-asset.localhost/library/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedAssetUrl {
@@ -14,6 +16,8 @@ pub struct ParsedAssetUrl {
 pub fn parse_asset_url(url: &str) -> AppResult<ParsedAssetUrl> {
     let rest = url
         .strip_prefix(ASSET_SCHEME_PREFIX)
+        .or_else(|| url.strip_prefix(WINDOWS_HTTP_PREFIX))
+        .or_else(|| url.strip_prefix(WINDOWS_HTTPS_PREFIX))
         .ok_or(AppError::InvalidFileId)?;
     let mut parts = rest.split('/');
     let export_id = parts
