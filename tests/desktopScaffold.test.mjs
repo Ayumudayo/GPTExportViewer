@@ -1,0 +1,29 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+const tauriConfig = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
+const cargoToml = await readFile("src-tauri/Cargo.toml", "utf8");
+const libRs = await readFile("src-tauri/src/lib.rs", "utf8");
+
+assert.equal(packageJson.scripts["desktop:dev"], "tauri dev");
+assert.equal(packageJson.scripts["desktop:build"], "tauri build -- --no-bundle");
+assert.ok(packageJson.dependencies["@tauri-apps/api"], "@tauri-apps/api should be a runtime dependency");
+assert.ok(packageJson.dependencies["@tauri-apps/plugin-dialog"], "@tauri-apps/plugin-dialog should be a runtime dependency");
+assert.ok(packageJson.devDependencies["@tauri-apps/cli"], "@tauri-apps/cli should be a dev dependency");
+
+assert.equal(tauriConfig.productName, "GPTExportManager");
+assert.equal(tauriConfig.identifier, "local.gpt-export-manager.app");
+assert.equal(tauriConfig.build.beforeDevCommand, "npm run dev");
+assert.equal(tauriConfig.build.devUrl, "http://127.0.0.1:5174");
+assert.equal(tauriConfig.build.beforeBuildCommand, "npm run build");
+assert.equal(tauriConfig.build.frontendDist, "../dist");
+assert.equal(tauriConfig.bundle.windows.webviewInstallMode.type, "skip");
+assert.equal(tauriConfig.bundle.windows.minimumWebview2Version, "110.0.1531.0");
+
+assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on tauri-plugin-dialog");
+assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");
+assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe commands");
+assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
+
+console.log("desktop scaffold tests passed");
