@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 const styles = await readFile("src/styles.css", "utf8");
 const main = await readFile("src/main.jsx", "utf8");
 const apiClient = await readFile("src/data/apiClient.js", "utf8");
+const httpClient = await readFile("src/data/httpApiClient.js", "utf8");
+const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
 
 assert.equal(main.includes('aria-label="Settings"'), true, "Settings should be a real, reachable control");
 assert.equal(main.includes("function SettingsDialog"), true, "Settings should render a real dialog instead of a placeholder");
@@ -11,8 +13,9 @@ assert.equal(main.includes("source-folder-input"), true, "Settings should expose
 assert.equal(apiClient.includes("fetchSettings"), true, "Client API should fetch current runtime settings");
 assert.equal(apiClient.includes("updateSettings"), true, "Client API should persist source folder updates");
 assert.equal(apiClient.includes("pickSourceFolder"), true, "Client API should ask the local app server to open the native folder picker");
-assert.equal(apiClient.includes("/api/pick-folder"), true, "Folder selection should use the native picker endpoint");
-assert.equal(apiClient.includes("local API server is running an older build"), true, "Missing new API endpoints should explain that the server process must be restarted");
+assert.equal(httpClient.includes("/api/pick-folder"), true, "HTTP folder selection should use the native picker endpoint");
+assert.equal(httpClient.includes("local API server is running an older build"), true, "Missing new HTTP API endpoints should explain that the server process must be restarted");
+assert.equal(tauriClient.includes("@tauri-apps/plugin-dialog"), true, "Desktop folder selection should use the Tauri native dialog plugin");
 assert.equal(main.includes("function FolderPicker"), false, "Settings should not use an in-app folder browser when Browse is expected to open the OS picker");
 assert.equal(main.includes('aria-label="Browse source folder"'), true, "Source folder settings should expose a native browse action");
 assert.equal(main.includes("folder-picker"), false, "In-app folder picker UI should not render for the native Browse action");

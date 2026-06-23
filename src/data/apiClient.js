@@ -1,75 +1,46 @@
-const API_BASE = (import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:43117").replace(/\/$/, "");
+import * as httpClient from "./httpApiClient.js";
+import * as tauriClient from "./tauriApiClient.js";
 
-export async function fetchExports() {
-  return request("/api/exports");
+export function isTauriRuntime() {
+  return Boolean(globalThis.window?.__TAURI_INTERNALS__ || globalThis.window?.__TAURI__);
 }
 
-export async function fetchSettings() {
-  return request("/api/settings");
+export function selectClient() {
+  return isTauriRuntime() ? tauriClient : httpClient;
 }
 
-export async function pickSourceFolder({ initialPath }) {
-  return request("/api/pick-folder", {
-    method: "POST",
-    body: JSON.stringify({ initialPath })
-  });
+export function fetchExports(...args) {
+  return selectClient().fetchExports(...args);
 }
 
-export async function updateSettings({ sourceRoot }) {
-  return request("/api/settings", {
-    method: "PATCH",
-    body: JSON.stringify({ sourceRoot })
-  });
+export function fetchSettings(...args) {
+  return selectClient().fetchSettings(...args);
 }
 
-export async function fetchStats(exportId) {
-  return request(`/api/stats?${queryString({ exportId })}`);
+export function pickSourceFolder(...args) {
+  return selectClient().pickSourceFolder(...args);
 }
 
-export async function fetchConversations({ exportId, query = "", filter = "all", cursor = 0, limit = 50 }) {
-  return request(`/api/conversations?${queryString({ exportId, query, filter, cursor, limit })}`);
+export function updateSettings(...args) {
+  return selectClient().updateSettings(...args);
 }
 
-export async function fetchConversation({ exportId, conversationId, start = 0, limit = 100 }) {
-  return request(`/api/conversations/${encodeURIComponent(conversationId)}?${queryString({ exportId, start, limit })}`);
+export function fetchStats(...args) {
+  return selectClient().fetchStats(...args);
 }
 
-export async function fetchLibrary({ exportId, query = "", filter = "all", cursor = 0, limit = 80 }) {
-  return request(`/api/library?${queryString({ exportId, query, filter, cursor, limit })}`);
+export function fetchConversations(...args) {
+  return selectClient().fetchConversations(...args);
 }
 
-export function assetUrl(exportId, fileId) {
-  return `${API_BASE}/api/assets/${encodeURIComponent(fileId)}?${queryString({ exportId })}`;
+export function fetchConversation(...args) {
+  return selectClient().fetchConversation(...args);
 }
 
-async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body ? { "content-type": "application/json" } : {}),
-      ...(options.headers ?? {})
-    }
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(formatApiError(path, response.status, body?.error));
-  }
-  return body;
+export function fetchLibrary(...args) {
+  return selectClient().fetchLibrary(...args);
 }
 
-function formatApiError(path, status, message) {
-  if (status === 404 && message === "Not found") {
-    return `The local API server is running an older build and does not support ${path}. Restart the API server.`;
-  }
-  return message ?? `HTTP ${status}`;
-}
-
-function queryString(values) {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined && value !== null && value !== "") {
-      params.set(key, String(value));
-    }
-  }
-  return params.toString();
+export function assetUrl(...args) {
+  return selectClient().assetUrl(...args);
 }
