@@ -5,3 +5,6 @@ dist/
 *.log
 docs/*
 !docs/HANDOFF.md
+!docs/superpowers/
+!docs/superpowers/specs/
+!docs/superpowers/specs/*.md
