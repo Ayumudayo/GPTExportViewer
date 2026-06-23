@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gpt_export_manager_lib::{cache, exports, fs_guards, paging, settings, webview2};
+use gpt_export_manager_lib::{cache, conversations, exports, fs_guards, paging, settings, webview2};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -85,13 +85,79 @@ fn foundations_webview2_version_accepts_minimum_and_newer_runtime() {
     assert!(webview2::is_version_at_least("120.0.2210.77", "110.0.1531.0"));
 }
 
+#[test]
+fn conversations_read_array_or_object_shapes() {
+    let fixture = make_export_fixture();
+    let array_items = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
+    assert_eq!(array_items.len(), 3);
+
+    let object_file = fixture.root.path().join("object-conversations.json");
+    write_json(&object_file, &json!({ "conversations": [array_items[0].clone()] }));
+    let object_items = conversations::summary_index::read_conversation_array(&object_file).unwrap();
+    assert_eq!(object_items.len(), 1);
+}
+
+#[test]
+fn conversations_summary_index_sorts_and_counts_messages() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let index = conversations::summary_index::build_conversation_summary_index(&export_item).unwrap();
+    assert_eq!(index.items.len(), 3);
+    assert_eq!(index.items[0].title, "Parent only chain");
+    assert_eq!(index.items.iter().find(|item| item.id == "conv-1").unwrap().message_count, 2);
+    assert_eq!(index.stats.total_messages, 6);
+}
+
+#[test]
+fn conversations_normalize_parent_only_mapping_in_parent_order() {
+    let fixture = make_export_fixture();
+    let conversations = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
+    let parent_only = conversations.iter().find(|item| item["id"] == "conv-parent-only").unwrap();
+    let normalized = conversations::normalize::normalize_conversation(parent_only).unwrap();
+    let texts: Vec<_> = normalized.messages.iter().map(|message| message.text.as_str()).collect();
+    assert_eq!(texts, vec!["Root message", "Child message", "Grandchild message"]);
+}
+
+#[test]
+fn conversations_normalize_multimodal_text_and_asset_refs() {
+    let fixture = make_export_fixture();
+    let conversations = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
+    let first = conversations.iter().find(|item| item["id"] == "conv-1").unwrap();
+    let normalized = conversations::normalize::normalize_conversation(first).unwrap();
+    assert_eq!(normalized.messages[1].text, "Here is image\nDone");
+    assert!(normalized.messages[1].asset_refs.iter().any(|asset| asset.file_id == "file-img-1"));
+}
+
+#[test]
+fn conversations_load_conversation_pages_messages_and_range() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let loaded = conversations::load::load_conversation(&export_item, "conv-parent-only", fixture.cache_dir.path(), 0, 2)
+        .unwrap()
+        .unwrap();
+    let texts: Vec<_> = loaded.messages.iter().map(|message| message.text.as_str()).collect();
+    assert_eq!(texts, vec!["Root message", "Child message"]);
+    assert_eq!(loaded.range.unwrap().next_start, Some(2));
+}
+
+#[test]
+fn conversations_malformed_json_returns_parse_failed() {
+    let fixture = make_export_fixture();
+    let malformed = fixture.root.path().join("malformed.json");
+    fs::write(&malformed, "{ not json").unwrap();
+    let error = conversations::summary_index::read_conversation_array(&malformed).unwrap_err();
+    assert_eq!(error.code(), "parse_failed");
+}
+
 struct Fixture {
     root: TempDir,
+    cache_dir: TempDir,
     good: PathBuf,
 }
 
 fn make_export_fixture() -> Fixture {
     let root = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
     let good = root.path().join("chatgpt-export-good");
     let partial = root.path().join("chatgpt-export-partial");
     fs::create_dir_all(&good).unwrap();
@@ -102,10 +168,106 @@ fn make_export_fixture() -> Fixture {
         &json!([
             {
                 "id": "conv-1",
-                "title": "Alpha",
+                "conversation_id": "thread-1",
+                "title": "Alpha image work",
                 "create_time": 1710000000,
                 "update_time": 1710000600,
-                "mapping": {}
+                "current_node": "msg2",
+                "default_model_slug": "gpt-4o",
+                "is_archived": false,
+                "is_starred": true,
+                "mapping": {
+                    "root": { "id": "root", "parent": null, "children": ["msg1"] },
+                    "msg1": {
+                        "id": "msg1",
+                        "parent": "root",
+                        "children": ["msg2"],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "create_time": 1710000001,
+                            "content": { "content_type": "text", "parts": ["Please make an image"] },
+                            "metadata": {
+                                "attachments": [{ "file_id": "file-input", "name": "input.png", "mime_type": "image/png" }]
+                            }
+                        }
+                    },
+                    "msg2": {
+                        "id": "msg2",
+                        "parent": "msg1",
+                        "children": [],
+                        "message": {
+                            "id": "m2",
+                            "author": { "role": "assistant" },
+                            "create_time": 1710000002,
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [{ "content_type": "text", "text": "Here is image" }, "Done"]
+                            },
+                            "metadata": {
+                                "attachments": [{ "file_id": "file-img-1", "name": "library.png", "mime_type": "image/png" }]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-2",
+                "title": "Beta notes",
+                "create_time": 1710000900,
+                "update_time": 1710001000,
+                "is_archived": true,
+                "mapping": {
+                    "node1": {
+                        "id": "node1",
+                        "parent": null,
+                        "children": [],
+                        "message": {
+                            "id": "m3",
+                            "author": { "role": "user" },
+                            "create_time": 1710000901,
+                            "content": { "text": "Loose text shape" }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-parent-only",
+                "title": "Parent only chain",
+                "create_time": 1710001100,
+                "update_time": 1710001300,
+                "mapping": {
+                    "parentRoot": {
+                        "id": "parentRoot",
+                        "parent": null,
+                        "message": {
+                            "id": "pm1",
+                            "author": { "role": "user" },
+                            "create_time": 1710001101,
+                            "content": { "content_type": "text", "parts": ["Root message"] }
+                        }
+                    },
+                    "parentChild": {
+                        "id": "parentChild",
+                        "parent": "parentRoot",
+                        "message": {
+                            "id": "pm2",
+                            "author": { "role": "assistant" },
+                            "create_time": 1710001102,
+                            "content": { "content_type": "text", "parts": ["Child message"] }
+                        }
+                    },
+                    "parentGrandchild": {
+                        "id": "parentGrandchild",
+                        "parent": "parentChild",
+                        "message": {
+                            "id": "pm3",
+                            "author": { "role": "user" },
+                            "create_time": 1710001103,
+                            "content": { "content_type": "text", "parts": ["Grandchild message"] }
+                        }
+                    }
+                }
             }
         ]),
     );
@@ -113,7 +275,7 @@ fn make_export_fixture() -> Fixture {
     write_json(&good.join("conversation_asset_file_names.json"), &json!({}));
     write_json(&partial.join("conversations.json"), &json!([]));
 
-    Fixture { root, good }
+    Fixture { root, cache_dir, good }
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) {

@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod conversations;
 pub mod errors;
 pub mod exports;
 pub mod fs_guards;
