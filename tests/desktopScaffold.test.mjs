@@ -5,9 +5,11 @@ const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const tauriConfig = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
 const cargoToml = await readFile("src-tauri/Cargo.toml", "utf8");
 const libRs = await readFile("src-tauri/src/lib.rs", "utf8");
+const readme = await readFile("README.md", "utf8");
+const handoff = await readFile("docs/HANDOFF.md", "utf8");
 
 assert.equal(packageJson.scripts["desktop:dev"], "tauri dev");
-assert.equal(packageJson.scripts["desktop:build"], "tauri build -- --no-bundle");
+assert.equal(packageJson.scripts["desktop:build"], "tauri build --no-bundle");
 assert.ok(packageJson.dependencies["@tauri-apps/api"], "@tauri-apps/api should be a runtime dependency");
 assert.ok(packageJson.dependencies["@tauri-apps/plugin-dialog"], "@tauri-apps/plugin-dialog should be a runtime dependency");
 assert.ok(packageJson.devDependencies["@tauri-apps/cli"], "@tauri-apps/cli should be a dev dependency");
@@ -25,5 +27,13 @@ assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on t
 assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");
 assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe commands");
 assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
+
+for (const document of [readme, handoff]) {
+  assert.match(document, /Tauri\/Rust/, "Desktop docs should name Tauri/Rust as the primary target");
+  assert.match(document, /Node server is .*web-development compatibility/i, "Desktop docs should demote Node server to web-development compatibility");
+  assert.match(document, /110\.0\.1531\.0/, "Desktop docs should document the WebView2 minimum");
+  assert.match(document, /user app data/i, "Desktop docs should say settings and cache live in user app data");
+  assert.match(document, /src-tauri\/target\/release\/GPTExportManager\.exe/, "Desktop docs should document the portable exe path");
+}
 
 console.log("desktop scaffold tests passed");
