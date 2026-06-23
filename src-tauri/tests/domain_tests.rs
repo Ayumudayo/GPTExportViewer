@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gpt_export_manager_lib::{cache, conversations, exports, fs_guards, paging, settings, webview2};
+use gpt_export_manager_lib::{
+    asset_protocol, cache, conversations, exports, fs_guards, library, paging, settings, webview2,
+};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -76,23 +78,38 @@ fn foundations_settings_path_uses_app_data_not_repo_cache() {
 
 #[test]
 fn foundations_webview2_version_rejects_older_runtime() {
-    assert!(!webview2::is_version_at_least("109.0.1518.78", "110.0.1531.0"));
+    assert!(!webview2::is_version_at_least(
+        "109.0.1518.78",
+        "110.0.1531.0"
+    ));
 }
 
 #[test]
 fn foundations_webview2_version_accepts_minimum_and_newer_runtime() {
-    assert!(webview2::is_version_at_least("110.0.1531.0", "110.0.1531.0"));
-    assert!(webview2::is_version_at_least("120.0.2210.77", "110.0.1531.0"));
+    assert!(webview2::is_version_at_least(
+        "110.0.1531.0",
+        "110.0.1531.0"
+    ));
+    assert!(webview2::is_version_at_least(
+        "120.0.2210.77",
+        "110.0.1531.0"
+    ));
 }
 
 #[test]
 fn conversations_read_array_or_object_shapes() {
     let fixture = make_export_fixture();
-    let array_items = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
+    let array_items = conversations::summary_index::read_conversation_array(
+        &fixture.good.join("conversations.json"),
+    )
+    .unwrap();
     assert_eq!(array_items.len(), 3);
 
     let object_file = fixture.root.path().join("object-conversations.json");
-    write_json(&object_file, &json!({ "conversations": [array_items[0].clone()] }));
+    write_json(
+        &object_file,
+        &json!({ "conversations": [array_items[0].clone()] }),
+    );
     let object_items = conversations::summary_index::read_conversation_array(&object_file).unwrap();
     assert_eq!(object_items.len(), 1);
 }
@@ -101,41 +118,82 @@ fn conversations_read_array_or_object_shapes() {
 fn conversations_summary_index_sorts_and_counts_messages() {
     let fixture = make_export_fixture();
     let export_item = exports::describe_export(&fixture.good).unwrap();
-    let index = conversations::summary_index::build_conversation_summary_index(&export_item).unwrap();
+    let index =
+        conversations::summary_index::build_conversation_summary_index(&export_item).unwrap();
     assert_eq!(index.items.len(), 3);
     assert_eq!(index.items[0].title, "Parent only chain");
-    assert_eq!(index.items.iter().find(|item| item.id == "conv-1").unwrap().message_count, 2);
+    assert_eq!(
+        index
+            .items
+            .iter()
+            .find(|item| item.id == "conv-1")
+            .unwrap()
+            .message_count,
+        2
+    );
     assert_eq!(index.stats.total_messages, 6);
 }
 
 #[test]
 fn conversations_normalize_parent_only_mapping_in_parent_order() {
     let fixture = make_export_fixture();
-    let conversations = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
-    let parent_only = conversations.iter().find(|item| item["id"] == "conv-parent-only").unwrap();
+    let conversations = conversations::summary_index::read_conversation_array(
+        &fixture.good.join("conversations.json"),
+    )
+    .unwrap();
+    let parent_only = conversations
+        .iter()
+        .find(|item| item["id"] == "conv-parent-only")
+        .unwrap();
     let normalized = conversations::normalize::normalize_conversation(parent_only).unwrap();
-    let texts: Vec<_> = normalized.messages.iter().map(|message| message.text.as_str()).collect();
-    assert_eq!(texts, vec!["Root message", "Child message", "Grandchild message"]);
+    let texts: Vec<_> = normalized
+        .messages
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["Root message", "Child message", "Grandchild message"]
+    );
 }
 
 #[test]
 fn conversations_normalize_multimodal_text_and_asset_refs() {
     let fixture = make_export_fixture();
-    let conversations = conversations::summary_index::read_conversation_array(&fixture.good.join("conversations.json")).unwrap();
-    let first = conversations.iter().find(|item| item["id"] == "conv-1").unwrap();
+    let conversations = conversations::summary_index::read_conversation_array(
+        &fixture.good.join("conversations.json"),
+    )
+    .unwrap();
+    let first = conversations
+        .iter()
+        .find(|item| item["id"] == "conv-1")
+        .unwrap();
     let normalized = conversations::normalize::normalize_conversation(first).unwrap();
     assert_eq!(normalized.messages[1].text, "Here is image\nDone");
-    assert!(normalized.messages[1].asset_refs.iter().any(|asset| asset.file_id == "file-img-1"));
+    assert!(normalized.messages[1]
+        .asset_refs
+        .iter()
+        .any(|asset| asset.file_id == "file-img-1"));
 }
 
 #[test]
 fn conversations_load_conversation_pages_messages_and_range() {
     let fixture = make_export_fixture();
     let export_item = exports::describe_export(&fixture.good).unwrap();
-    let loaded = conversations::load::load_conversation(&export_item, "conv-parent-only", fixture.cache_dir.path(), 0, 2)
-        .unwrap()
-        .unwrap();
-    let texts: Vec<_> = loaded.messages.iter().map(|message| message.text.as_str()).collect();
+    let loaded = conversations::load::load_conversation(
+        &export_item,
+        "conv-parent-only",
+        fixture.cache_dir.path(),
+        0,
+        2,
+    )
+    .unwrap()
+    .unwrap();
+    let texts: Vec<_> = loaded
+        .messages
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect();
     assert_eq!(texts, vec!["Root message", "Child message"]);
     assert_eq!(loaded.range.unwrap().next_start, Some(2));
 }
@@ -147,6 +205,81 @@ fn conversations_malformed_json_returns_parse_failed() {
     fs::write(&malformed, "{ not json").unwrap();
     let error = conversations::summary_index::read_conversation_array(&malformed).unwrap_err();
     assert_eq!(error.code(), "parse_failed");
+}
+
+#[test]
+fn library_index_keeps_images_and_resolves_source_states() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let index = library::index::build_library_index(
+        &export_item,
+        &["conv-1".to_string()].into_iter().collect(),
+    )
+    .unwrap();
+    assert_eq!(index.items.len(), 2);
+    let linked = index
+        .items
+        .iter()
+        .find(|item| item.file_id == "file-img-1")
+        .unwrap();
+    let missing = index
+        .items
+        .iter()
+        .find(|item| item.file_id == "file-img-missing")
+        .unwrap();
+    assert_eq!(linked.display_name, "renamed library.png");
+    assert_eq!(linked.source_state, "linked");
+    assert_eq!(linked.exists, true);
+    assert_eq!(missing.source_state, "missing-source-chat");
+    assert_eq!(missing.exists, false);
+    assert_eq!(index.stats.total_images, 2);
+}
+
+#[test]
+fn library_asset_resolution_rejects_invalid_ids_and_sanitizes_missing_assets() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let index = library::index::build_library_index(
+        &export_item,
+        &["conv-1".to_string()].into_iter().collect(),
+    )
+    .unwrap();
+    let asset = library::assets::resolve_asset(&export_item, "file-img-1", &index.items).unwrap();
+    assert_eq!(asset.mime_type, "image/png");
+    assert!(asset.file_path.ends_with("file-img-1.dat"));
+
+    assert_eq!(
+        library::assets::resolve_asset(&export_item, "..\\escape", &index.items)
+            .unwrap_err()
+            .code(),
+        "invalid_file_id"
+    );
+    assert_eq!(
+        library::assets::resolve_asset(&export_item, "file-img-missing", &index.items)
+            .unwrap_err()
+            .code(),
+        "asset_not_found"
+    );
+}
+
+#[test]
+fn library_mime_sniffing_detects_common_image_types() {
+    let fixture = make_export_fixture();
+    assert_eq!(
+        library::mime::sniff_mime(&fixture.good.join("file-img-1.dat"), None).unwrap(),
+        "image/png"
+    );
+}
+
+#[test]
+fn library_asset_protocol_accepts_only_library_urls() {
+    let parsed =
+        asset_protocol::parse_asset_url("gpt-export-asset://library/export%201/file-img-1")
+            .unwrap();
+    assert_eq!(parsed.export_id, "export 1");
+    assert_eq!(parsed.file_id, "file-img-1");
+    assert!(asset_protocol::parse_asset_url("gpt-export-asset://other/export/file").is_err());
+    assert!(asset_protocol::parse_asset_url("file:///C:/secret.png").is_err());
 }
 
 struct Fixture {
@@ -271,13 +404,63 @@ fn make_export_fixture() -> Fixture {
             }
         ]),
     );
-    write_json(&good.join("library_files.json"), &json!([]));
-    write_json(&good.join("conversation_asset_file_names.json"), &json!({}));
+    write_json(
+        &good.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file-img-1",
+                "file_name": "library generated.png",
+                "mime_type": "image/png",
+                "file_size_bytes": 8,
+                "created_at": "2024-03-09T16:00:02Z",
+                "state": "ready",
+                "library_file_category": "image",
+                "origination_thread_id": "conv-1",
+                "origination_message_id": "m2"
+            },
+            {
+                "file_id": "file-doc-1",
+                "file_name": "notes.txt",
+                "mime_type": "text/plain",
+                "file_size_bytes": 4,
+                "created_at": "2024-03-09T16:00:04Z",
+                "state": "ready",
+                "library_file_category": "file"
+            },
+            {
+                "file_id": "file-img-missing",
+                "file_name": "missing.png",
+                "mime_type": "image/png",
+                "file_size_bytes": 99,
+                "created_at": "2024-03-09T16:00:05Z",
+                "state": "ready",
+                "library_file_category": "image",
+                "origination_thread_id": "missing-conv"
+            }
+        ]),
+    );
+    write_json(
+        &good.join("conversation_asset_file_names.json"),
+        &json!({ "file-img-1.dat": "renamed library.png" }),
+    );
+    fs::write(
+        good.join("file-img-1.dat"),
+        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    )
+    .unwrap();
     write_json(&partial.join("conversations.json"), &json!([]));
 
-    Fixture { root, cache_dir, good }
+    Fixture {
+        root,
+        cache_dir,
+        good,
+    }
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) {
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(value).unwrap())).unwrap();
+    fs::write(
+        path,
+        format!("{}\n", serde_json::to_string_pretty(value).unwrap()),
+    )
+    .unwrap();
 }

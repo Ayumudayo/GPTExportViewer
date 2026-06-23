@@ -6,7 +6,12 @@ pub struct Pagination {
     pub limit: usize,
 }
 
-pub fn parse_pagination(cursor: Option<usize>, limit: Option<usize>, default_limit: usize, max_limit: usize) -> Pagination {
+pub fn parse_pagination(
+    cursor: Option<usize>,
+    limit: Option<usize>,
+    default_limit: usize,
+    max_limit: usize,
+) -> Pagination {
     let safe_limit = limit.unwrap_or(default_limit).clamp(1, max_limit);
     Pagination {
         cursor: cursor.unwrap_or(0),
@@ -14,7 +19,12 @@ pub fn parse_pagination(cursor: Option<usize>, limit: Option<usize>, default_lim
     }
 }
 
-pub fn page_items<T: Clone>(items: &[T], cursor: usize, limit: usize, max_limit: usize) -> PagedItems<T> {
+pub fn page_items<T: Clone>(
+    items: &[T],
+    cursor: usize,
+    limit: usize,
+    max_limit: usize,
+) -> PagedItems<T> {
     let pagination = parse_pagination(Some(cursor), Some(limit), limit, max_limit);
     let end = pagination.cursor.saturating_add(pagination.limit);
     let sliced = items

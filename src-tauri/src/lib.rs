@@ -1,8 +1,10 @@
+pub mod asset_protocol;
 pub mod cache;
 pub mod conversations;
 pub mod errors;
 pub mod exports;
 pub mod fs_guards;
+pub mod library;
 pub mod models;
 pub mod paging;
 pub mod settings;
@@ -195,7 +197,12 @@ fn show_startup_error(message: &str) {
     let title = wide("GPTExportManager");
     let body = wide(message);
     unsafe {
-        MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 

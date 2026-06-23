@@ -2,9 +2,11 @@ use chrono::{DateTime, Utc};
 
 pub fn to_iso_time(value: &serde_json::Value) -> Option<String> {
     if let Some(text) = value.as_str() {
-        return DateTime::parse_from_rfc3339(text)
-            .ok()
-            .map(|parsed| parsed.with_timezone(&Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        return DateTime::parse_from_rfc3339(text).ok().map(|parsed| {
+            parsed
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        });
     }
     let number = value.as_f64()?;
     let millis = if number > 10_000_000_000.0 {

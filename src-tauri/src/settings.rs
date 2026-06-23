@@ -5,9 +5,8 @@ use crate::fs_guards::resolve_absolute;
 
 pub fn resolve_source_root(source_root: &Path) -> AppResult<PathBuf> {
     let resolved = resolve_absolute(source_root);
-    let info = std::fs::metadata(&resolved).map_err(|_| {
-        AppError::InvalidSourceRoot("directory not found".to_string())
-    })?;
+    let info = std::fs::metadata(&resolved)
+        .map_err(|_| AppError::InvalidSourceRoot("directory not found".to_string()))?;
     if !info.is_dir() {
         return Err(AppError::InvalidSourceRoot("not a directory".to_string()));
     }

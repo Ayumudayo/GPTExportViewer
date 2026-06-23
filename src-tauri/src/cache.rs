@@ -32,10 +32,7 @@ pub fn write_json_atomic<T: Serialize + ?Sized>(file_path: &Path, value: &T) -> 
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
     }
-    let tmp = file_path.with_extension(format!(
-        "{}.tmp",
-        std::process::id()
-    ));
+    let tmp = file_path.with_extension(format!("{}.tmp", std::process::id()));
     let body = format!(
         "{}\n",
         serde_json::to_string_pretty(value)

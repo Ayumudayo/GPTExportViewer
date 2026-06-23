@@ -150,7 +150,9 @@ fn get_ordered_nodes(conversation: &Value) -> Vec<NodeValue> {
         .map(|(id, value)| {
             let mut node = value.clone();
             if let Some(object) = node.as_object_mut() {
-                object.entry("id").or_insert_with(|| Value::String(id.clone()));
+                object
+                    .entry("id")
+                    .or_insert_with(|| Value::String(id.clone()));
             }
             (
                 id.clone(),
@@ -236,11 +238,16 @@ fn derive_children_by_parent(by_id: &HashMap<String, NodeValue>) -> HashMap<Stri
             continue;
         };
         if by_id.contains_key(parent) {
-            children.entry(parent.to_string()).or_default().push(node.id.clone());
+            children
+                .entry(parent.to_string())
+                .or_default()
+                .push(node.id.clone());
         }
     }
     for siblings in children.values_mut() {
-        siblings.sort_by(|left, right| compare_nodes(by_id.get(left).unwrap(), by_id.get(right).unwrap()));
+        siblings.sort_by(|left, right| {
+            compare_nodes(by_id.get(left).unwrap(), by_id.get(right).unwrap())
+        });
     }
     children
 }
@@ -335,7 +342,11 @@ fn scan_asset_refs(value: &Value, refs: &mut Vec<AssetRef>, seen: &mut HashSet<S
     }
 }
 
-fn add_asset_ref(object: &Map<String, Value>, refs: &mut Vec<AssetRef>, seen: &mut HashSet<String>) {
+fn add_asset_ref(
+    object: &Map<String, Value>,
+    refs: &mut Vec<AssetRef>,
+    seen: &mut HashSet<String>,
+) {
     let file_id = ["file_id", "fileId", "id", "asset_pointer", "assetPointer"]
         .iter()
         .find_map(|key| object.get(*key).and_then(Value::as_str))

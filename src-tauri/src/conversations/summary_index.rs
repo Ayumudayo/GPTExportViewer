@@ -29,7 +29,11 @@ pub fn build_conversation_summary_index(export_item: &ExportItem) -> AppResult<C
         total_attachments: items.iter().map(|item| item.attachment_count).sum(),
         archived: items.iter().filter(|item| item.archived).count(),
         starred: items.iter().filter(|item| item.starred).count(),
-        max_messages: items.iter().map(|item| item.message_count).max().unwrap_or(0),
+        max_messages: items
+            .iter()
+            .map(|item| item.message_count)
+            .max()
+            .unwrap_or(0),
     };
     Ok(ConversationIndex {
         items,
@@ -40,7 +44,8 @@ pub fn build_conversation_summary_index(export_item: &ExportItem) -> AppResult<C
 
 pub fn read_conversation_array(file_path: &Path) -> AppResult<Vec<Value>> {
     let content = std::fs::read_to_string(file_path).map_err(|error| io_error(file_path, error))?;
-    let parsed: Value = serde_json::from_str(&content).map_err(|error| AppError::ParseFailed(error.to_string()))?;
+    let parsed: Value =
+        serde_json::from_str(&content).map_err(|error| AppError::ParseFailed(error.to_string()))?;
     if let Some(array) = parsed.as_array() {
         return Ok(array.clone());
     }
@@ -68,7 +73,9 @@ fn summarize_conversation(conversation: &Value, index: usize) -> ConversationSum
         .unwrap_or_default();
     let asset_refs = nodes
         .iter()
-        .flat_map(|node| extract_asset_refs_from_pair(&node["message"]["content"], &node["message"]["metadata"]))
+        .flat_map(|node| {
+            extract_asset_refs_from_pair(&node["message"]["content"], &node["message"]["metadata"])
+        })
         .collect::<Vec<_>>();
     let created_at = to_iso_time(
         conversation

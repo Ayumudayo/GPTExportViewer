@@ -18,7 +18,11 @@ pub fn scan_exports(root_path: &Path) -> AppResult<Vec<ExportItem>> {
     for entry in entries {
         let entry = entry.map_err(|error| io_error(&root, error))?;
         let path = entry.path();
-        if entry.file_type().map_err(|error| io_error(&path, error))?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|error| io_error(&path, error))?
+            .is_dir()
+        {
             candidates.push(path);
         }
     }

@@ -8,6 +8,8 @@ pub enum AppError {
     ExportNotFound,
     #[error("Invalid file id")]
     InvalidFileId,
+    #[error("Asset file not found")]
+    AssetNotFound,
     #[error("Resolved path escapes export root")]
     PathEscapesRoot,
     #[error("Parse failed: {0}")]
@@ -27,6 +29,7 @@ impl AppError {
             Self::InvalidSourceRoot(_) => "invalid_source_root",
             Self::ExportNotFound => "export_not_found",
             Self::InvalidFileId => "invalid_file_id",
+            Self::AssetNotFound => "asset_not_found",
             Self::PathEscapesRoot => "path_escapes_root",
             Self::ParseFailed(_) => "parse_failed",
             Self::CacheUnavailable(_) => "cache_unavailable",

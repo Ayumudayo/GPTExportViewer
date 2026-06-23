@@ -123,3 +123,53 @@ pub struct ConversationIndex {
     pub stats: ConversationStats,
     pub generated_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryItem {
+    pub id: String,
+    pub file_id: String,
+    pub display_name: String,
+    pub filename: String,
+    pub original_name: Option<String>,
+    pub mime: String,
+    pub size_bytes: u64,
+    pub size_label: String,
+    pub created_at: Option<String>,
+    pub status: String,
+    pub file_ref: String,
+    pub exists: bool,
+    pub source_conversation_id: Option<String>,
+    pub source_message_id: Option<String>,
+    pub source_state: String,
+    pub in_chat: bool,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStats {
+    pub total_images: usize,
+    pub linked_images: usize,
+    pub library_only_images: usize,
+    pub missing_source_images: usize,
+    pub missing_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryIndex {
+    pub items: Vec<LibraryItem>,
+    pub stats: LibraryStats,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedAsset {
+    pub file_id: String,
+    pub file_path: PathBuf,
+    pub file_name: String,
+    pub mime_type: String,
+    pub size: u64,
+}

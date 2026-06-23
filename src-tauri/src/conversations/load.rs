@@ -25,7 +25,9 @@ pub fn load_conversation(
             let found = conversations
                 .iter()
                 .enumerate()
-                .find(|(index, conversation)| get_conversation_id(conversation, &index.to_string()) == conversation_id)
+                .find(|(index, conversation)| {
+                    get_conversation_id(conversation, &index.to_string()) == conversation_id
+                })
                 .map(|(_, conversation)| conversation);
             let Some(found) = found else {
                 return Ok(None);
@@ -65,5 +67,8 @@ fn conversation_cache_path(cache_dir: &Path, export_id: &str, conversation_id: &
     cache_dir
         .join(export_id)
         .join("conversations")
-        .join(format!("{}-{digest}.json", safe_cache_name(conversation_id)))
+        .join(format!(
+            "{}-{digest}.json",
+            safe_cache_name(conversation_id)
+        ))
 }

@@ -1132,6 +1132,7 @@ name = "gpt-export-manager"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sha1",
