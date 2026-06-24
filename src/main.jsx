@@ -50,6 +50,14 @@ const GALLERY_ROW_SIZE = 284;
 const GALLERY_MIN_CARD_WIDTH = 176;
 const GALLERY_GAP = 14;
 const LAYOUT_STORAGE_KEY = "chatgpt-export-layout";
+const FOCUSABLE_DIALOG_SELECTOR = [
+  'button:not([disabled])',
+  '[href]',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])'
+].join(", ");
 const DEFAULT_LAYOUT = { sidebar: 360, inspector: 340 };
 const LAYOUT_LIMITS = {
   sidebar: { min: 280, max: 560 },
@@ -229,6 +237,13 @@ function reconcileConversationSelection(conversations, selectedConversationIds, 
     selectedConversationIds: selectedConversationIds.filter((id) => availableIds.has(id)),
     lastSelectedConversationId: availableIds.has(lastSelectedConversationId) ? lastSelectedConversationId : ""
   };
+}
+
+function getNextDialogFocusIndex(currentIndex, focusableCount, isShiftKey) {
+  if (focusableCount <= 0) return -1;
+  if (currentIndex < 0) return isShiftKey ? focusableCount - 1 : 0;
+  if (isShiftKey) return currentIndex <= 0 ? focusableCount - 1 : currentIndex - 1;
+  return currentIndex >= focusableCount - 1 ? 0 : currentIndex + 1;
 }
 
 function useAutoLoadMore({ hasMore, isLoading, onLoadMore }) {
@@ -931,21 +946,57 @@ function SessionContextMenu({ menu, count, onExport, onClose }) {
 }
 
 function ExportProgressDialog({ job, onOpenFolder, onClose }) {
+  const exportDialogRef = useRef(null);
+  const previouslyFocusedElementRef = useRef(null);
+  const isOpen = Boolean(job);
+
   useEffect(() => {
-    if (!job) return undefined;
+    if (!isOpen) return undefined;
+    previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.classList.add("modal-open");
+    const dialog = exportDialogRef.current;
+    const focusableElements = dialog ? Array.from(dialog.querySelectorAll(FOCUSABLE_DIALOG_SELECTOR)) : [];
+    const initialFocusTarget = focusableElements[0] ?? dialog;
+    initialFocusTarget?.focus?.();
+    return () => {
+      document.body.classList.remove("modal-open");
+      const previousFocus = previouslyFocusedElementRef.current;
+      if (previousFocus?.isConnected && typeof previousFocus.focus === "function") {
+        previousFocus.focus();
+      }
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
     const onKeyDown = (event) => {
+      const dialog = exportDialogRef.current;
+      if (!dialog) return;
+
       if (event.key === "Escape" && job.status !== "running") {
         event.preventDefault();
         onClose();
+        return;
+      }
+
+      if (event.key === "Tab") {
+        const focusableElements = Array.from(dialog.querySelectorAll(FOCUSABLE_DIALOG_SELECTOR));
+        const currentIndex = focusableElements.findIndex((element) => element === document.activeElement);
+        const nextIndex = getNextDialogFocusIndex(currentIndex, focusableElements.length, event.shiftKey);
+        event.preventDefault();
+        if (nextIndex < 0) {
+          dialog.focus();
+          return;
+        }
+        focusableElements[nextIndex]?.focus?.();
       }
     };
+
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.classList.remove("modal-open");
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [job, onClose]);
+  }, [isOpen, job?.status, onClose]);
 
   if (!job) return null;
 
@@ -959,6 +1010,8 @@ function ExportProgressDialog({ job, onOpenFolder, onClose }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="export-progress-title"
+        tabIndex={-1}
+        ref={exportDialogRef}
         onPointerDown={(event) => event.stopPropagation()}
       >
         <header>

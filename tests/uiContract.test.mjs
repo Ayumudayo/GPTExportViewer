@@ -36,7 +36,21 @@ function loadSelectionHelpers() {
   return context.helpers;
 }
 
+function loadDialogFocusHelpers() {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(
+    [
+      extractFunctionSource(main, "getNextDialogFocusIndex"),
+      "helpers = { getNextDialogFocusIndex };"
+    ].join("\n"),
+    context
+  );
+  return context.helpers;
+}
+
 const selectionHelpers = loadSelectionHelpers();
+const dialogFocusHelpers = loadDialogFocusHelpers();
 const helperConversations = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
@@ -49,6 +63,13 @@ assert.deepEqual(
   { selectedConversationIds: ["a", "c"], lastSelectedConversationId: "" },
   "Selection reconciliation should prune stale export ids and stale range anchor ids"
 );
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(0, 0, false), -1, "Dialog focus helper should fall back to the dialog itself when there are no focusable controls");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(-1, 3, false), 0, "Dialog focus helper should start from the first control on forward Tab");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(-1, 3, true), 2, "Dialog focus helper should start from the last control on reverse Tab");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(2, 3, false), 0, "Dialog focus helper should wrap forward Tab to the first control");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(0, 3, true), 2, "Dialog focus helper should wrap reverse Tab to the last control");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(1, 3, false), 2, "Dialog focus helper should advance to the next control within bounds");
+assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(1, 3, true), 0, "Dialog focus helper should move backward within bounds");
 
 assert.equal(main.includes('aria-label="Settings"'), true, "Settings should be a real, reachable control");
 assert.equal(main.includes("function SettingsDialog"), true, "Settings should render a real dialog instead of a placeholder");
@@ -81,6 +102,11 @@ assert.equal(main.includes("saveSessions"), true, "UI should call the session ex
 assert.equal(main.includes("openSavedSessionsFolder"), true, "Completed export dialog should expose folder opening");
 assert.equal(main.includes('sessionExportJob?.status === "running"'), true, "Session export actions should guard against re-entry while running");
 assert.equal(main.includes('className="export-progress-backdrop"'), true, "Export progress should render a dedicated backdrop wrapper");
+assert.equal(main.includes("exportDialogRef"), true, "Export dialog should keep a ref for focus management");
+assert.equal(main.includes("previouslyFocusedElementRef"), true, "Export dialog should restore the previously focused element on cleanup");
+assert.equal(main.includes('tabIndex={-1}'), true, "Export dialog should be focusable when no inner controls are available");
+assert.equal(main.includes('event.key === "Tab"'), true, "Export dialog should trap Tab navigation while open");
+assert.equal(main.includes("getNextDialogFocusIndex"), true, "Export dialog focus order should use a pure helper");
 assert.equal(main.includes("reconcileConversationSelection"), true, "Session export selection should be reconciled against the loaded conversation list");
 assert.equal(main.includes("aria-pressed={isExportSelected}"), true, "Session rows should expose export-selection state as pressed buttons");
 assert.equal(main.includes('aria-current={isActive ? "true" : undefined}'), true, "Session rows should expose the active chat separately from export selection");
