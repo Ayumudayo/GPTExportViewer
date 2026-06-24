@@ -89,7 +89,15 @@ try {
     const exportResponse = await fetch(`${baseUrl}/api/exports`);
     assert.equal(exportResponse.status, 200);
     const exportPayload = await exportResponse.json();
-    const exportId = exportPayload.exports.find((item) => item.name === "chatgpt-export-good").id;
+    const exportedItem = exportPayload.exports.find((item) => item.name === "chatgpt-export-good");
+    const exportId = exportedItem.id;
+    assert.ok(exportedItem.id);
+    assert.equal(exportedItem.name, "chatgpt-export-good");
+    assert.ok(exportedItem.modifiedAt);
+    assert.equal(exportedItem.hasConversations, true);
+    assert.equal(exportedItem.path, undefined);
+    assert.equal(exportedItem.paths, undefined);
+    assert.equal(exportedItem.modifiedAtMs, undefined);
 
     const settingsResponse = await fetch(`${baseUrl}/api/settings`);
     assert.equal(settingsResponse.status, 200);
@@ -234,6 +242,12 @@ try {
     assert.equal(patchSettingsPayload.settings.exportCount, 1);
     assert.equal(patchSettingsPayload.exports.length, 1);
     assert.equal(patchSettingsPayload.exports[0].name, "chatgpt-export-partial");
+    assert.ok(patchSettingsPayload.exports[0].id);
+    assert.ok(patchSettingsPayload.exports[0].modifiedAt);
+    assert.equal(patchSettingsPayload.exports[0].hasConversations, true);
+    assert.equal(patchSettingsPayload.exports[0].path, undefined);
+    assert.equal(patchSettingsPayload.exports[0].paths, undefined);
+    assert.equal(patchSettingsPayload.exports[0].modifiedAtMs, undefined);
 
     const nextExportsPayload = await fetch(`${baseUrl}/api/exports`).then((response) => response.json());
     assert.equal(nextExportsPayload.exports.length, 1);

@@ -25,7 +25,7 @@ export function createRouter(state) {
         return sendJson(response, 200, { ok: true }, cors.headers);
       }
       if (request.method === "GET" && url.pathname === "/api/exports") {
-        return sendJson(response, 200, { exports: state.exports }, cors.headers);
+        return sendJson(response, 200, { exports: state.exports.map(publicExport) }, cors.headers);
       }
       if (request.method === "GET" && url.pathname === "/api/settings") {
         return sendJson(response, 200, { settings: publicSettings(state) }, cors.headers);
@@ -39,7 +39,7 @@ export function createRouter(state) {
         state.indexes.clear();
         state.indexJobs.clear();
         await writeRuntimeSettings(state.cacheDir, { sourceRoot });
-        return sendJson(response, 200, { settings: publicSettings(state), exports: state.exports }, cors.headers);
+        return sendJson(response, 200, { settings: publicSettings(state), exports: state.exports.map(publicExport) }, cors.headers);
       }
       if (request.method === "POST" && url.pathname === "/api/pick-folder") {
         const body = await readJsonBody(request);
