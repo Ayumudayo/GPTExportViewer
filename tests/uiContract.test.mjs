@@ -1,11 +1,54 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
 const styles = await readFile("src/styles.css", "utf8");
 const main = await readFile("src/main.jsx", "utf8");
 const apiClient = await readFile("src/data/apiClient.js", "utf8");
 const httpClient = await readFile("src/data/httpApiClient.js", "utf8");
 const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
+
+function extractFunctionSource(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} should be declared as a pure helper`);
+  const bodyStart = source.indexOf("{", start);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`Could not extract ${name}`);
+}
+
+function loadSelectionHelpers() {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(
+    [
+      extractFunctionSource(main, "toggleSelection"),
+      extractFunctionSource(main, "selectConversationRange"),
+      extractFunctionSource(main, "reconcileConversationSelection"),
+      "helpers = { toggleSelection, selectConversationRange, reconcileConversationSelection };"
+    ].join("\n"),
+    context
+  );
+  return context.helpers;
+}
+
+const selectionHelpers = loadSelectionHelpers();
+const helperConversations = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+assert.deepEqual(plain(selectionHelpers.toggleSelection(["a", "b"], "b")), ["a"], "Ctrl/Cmd toggle should remove only the requested export-selection id");
+assert.deepEqual(plain(selectionHelpers.toggleSelection(["a"], "c")), ["a", "c"], "Ctrl/Cmd toggle should append a missing export-selection id");
+assert.deepEqual(plain(selectionHelpers.selectConversationRange(helperConversations, "b", "d")), ["b", "c", "d"], "Shift range should include anchor and target");
+assert.deepEqual(plain(selectionHelpers.selectConversationRange(helperConversations, "missing", "c")), ["c"], "Shift range should fall back to the target when the anchor is stale");
+assert.deepEqual(
+  plain(selectionHelpers.reconcileConversationSelection(helperConversations, ["a", "x", "c"], "x")),
+  { selectedConversationIds: ["a", "c"], lastSelectedConversationId: "" },
+  "Selection reconciliation should prune stale export ids and stale range anchor ids"
+);
 
 assert.equal(main.includes('aria-label="Settings"'), true, "Settings should be a real, reachable control");
 assert.equal(main.includes("function SettingsDialog"), true, "Settings should render a real dialog instead of a placeholder");
@@ -32,6 +75,14 @@ assert.equal(main.includes("onContextMenu"), true, "Session rows should handle c
 assert.equal(main.includes("event.shiftKey"), true, "Session row selection should support shift-range selection");
 assert.equal(main.includes("event.ctrlKey || event.metaKey"), true, "Session row selection should support ctrl/cmd toggles");
 assert.equal(main.includes("SessionContextMenu"), true, "Session selection should render an extracted context-menu component");
+assert.equal(main.includes("reconcileConversationSelection"), true, "Session export selection should be reconciled against the loaded conversation list");
+assert.equal(main.includes("aria-pressed={isExportSelected}"), true, "Session rows should expose export-selection state as pressed buttons");
+assert.equal(main.includes('aria-current={isActive ? "true" : undefined}'), true, "Session rows should expose the active chat separately from export selection");
+assert.equal(main.includes("aria-selected={isMultiSelected}"), false, "Session rows should not use aria-selected on normal buttons");
+assert.equal(main.includes('role="menu"'), false, "Session action popover should not advertise menu semantics without full menu behavior");
+assert.equal(main.includes('role="menuitem"'), false, "Session action buttons should stay normal buttons unless full menu behavior is implemented");
+assert.equal(main.includes('role="group"'), true, "Session action popover should use simple grouped button semantics");
+assert.equal(main.includes('aria-label="Session actions"'), true, "Session action popover should have an accessible group label");
 assert.equal(main.includes("ChevronRight"), false, "Inspector panels should not show chevrons when they are not expandable");
 assert.equal(main.includes("function ResizeHandle"), true, "Pane boundaries should expose resize handles");
 assert.equal(main.includes('role="separator"'), true, "Resize handles should use the separator role");
@@ -105,6 +156,8 @@ assert.match(styles, /\.settings-dialog\s*\{[\s\S]*?background: var\(--panel\);[
 assert.match(styles, /\.conversation-list\s*\{[\s\S]*?overflow: auto;[\s\S]*?\}/, "Conversation list should be scrollable so its auto-load sentinel can enter view");
 assert.match(styles, /\.library-side-list\s*\{[\s\S]*?overflow: auto;[\s\S]*?\}/, "Library side list should be scrollable so its auto-load sentinel can enter view");
 assert.match(styles, /\.conversation-row\.multi-selected\s*\{/, "Multi-selected session rows should have a visible state");
+assert.match(styles, /\.conversation-row\.selected\s*\{[\s\S]*?box-shadow: inset 3px 0 0 var\(--muted-2\);[\s\S]*?\}/, "Active-only session rows should use a neutral active marker, not the export-selection marker");
+assert.match(styles, /\.conversation-row\.multi-selected\s*\{[\s\S]*?box-shadow: inset 3px 0 0 var\(--green\);[\s\S]*?\}/, "Export-selected session rows should use the export-selection marker");
 assert.match(styles, /\.session-context-menu\s*\{/, "Session context menu should have fixed popup styling");
 
 console.log("ui contract tests passed");

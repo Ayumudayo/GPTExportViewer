@@ -211,6 +211,14 @@ function selectConversationRange(conversations, anchorId, targetId) {
   return conversations.slice(startIndex, endIndex + 1).map((item) => item.id);
 }
 
+function reconcileConversationSelection(conversations, selectedConversationIds, lastSelectedConversationId) {
+  const availableIds = new Set(conversations.map((item) => item.id));
+  return {
+    selectedConversationIds: selectedConversationIds.filter((id) => availableIds.has(id)),
+    lastSelectedConversationId: availableIds.has(lastSelectedConversationId) ? lastSelectedConversationId : ""
+  };
+}
+
 function useAutoLoadMore({ hasMore, isLoading, onLoadMore }) {
   const sentinelRef = useRef(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -333,6 +341,22 @@ function App() {
     setLastSelectedConversationId("");
     setSessionContextMenu(null);
   }, [mode, selectedExportId, query, conversationFilter]);
+
+  useEffect(() => {
+    const reconciled = reconcileConversationSelection(conversations, selectedConversationIds, lastSelectedConversationId);
+    if (
+      reconciled.selectedConversationIds.length !== selectedConversationIds.length ||
+      reconciled.selectedConversationIds.some((id, index) => id !== selectedConversationIds[index])
+    ) {
+      setSelectedConversationIds(reconciled.selectedConversationIds);
+    }
+    if (reconciled.lastSelectedConversationId !== lastSelectedConversationId) {
+      setLastSelectedConversationId(reconciled.lastSelectedConversationId);
+    }
+    if (sessionContextMenuState && !conversations.some((item) => item.id === sessionContextMenuState.conversationId)) {
+      setSessionContextMenu(null);
+    }
+  }, [conversations, lastSelectedConversationId, selectedConversationIds, sessionContextMenuState]);
 
   useEffect(() => {
     if (!selectedExportId) return;
@@ -745,7 +769,7 @@ function App() {
 
       <SessionContextMenu
         menu={sessionContextMenu}
-        count={selectedConversationIds.length || (sessionContextMenu ? 1 : 0)}
+        count={selectedConversationIds.length}
         onExport={exportSelectedSessions}
         onClose={closeSessionContextMenu}
       />
@@ -765,22 +789,23 @@ function App() {
 }
 
 function SessionContextMenu({ menu, count, onExport, onClose }) {
-  if (!menu) return null;
+  if (!menu || count < 1) return null;
   const label = count === 1 ? "Export this session" : `Export ${count} selected sessions`;
 
   return (
     <div
       className="session-context-menu"
-      role="menu"
+      role="group"
+      aria-label="Session actions"
       style={{ left: menu.x, top: menu.y }}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <button type="button" role="menuitem" onClick={onExport}>
+      <button type="button" onClick={onExport}>
         <FileDown size={15} />
         <span>{label}</span>
       </button>
-      <button type="button" className="session-context-menu-close" role="menuitem" aria-label="Close session context menu" onClick={onClose}>
+      <button type="button" className="session-context-menu-close" aria-label="Close session context menu" onClick={onClose}>
         <X size={15} />
       </button>
     </div>
@@ -977,13 +1002,14 @@ function Sidebar({
           <VirtualSpacer size={virtualConversations.beforeSize} />
           {virtualConversations.items.map(({ item }) => (
             (() => {
-              const isSelected = item.id === selectedConversationId;
-              const isMultiSelected = selectedConversationIds.includes(item.id);
+              const isActive = item.id === selectedConversationId;
+              const isExportSelected = selectedConversationIds.includes(item.id);
               return (
                 <button
-                  className={`conversation-row ${isSelected ? "selected" : ""} ${isMultiSelected ? "multi-selected" : ""}`}
+                  className={`conversation-row ${isActive ? "selected" : ""} ${isExportSelected ? "multi-selected" : ""}`}
                   key={item.id}
-                  aria-selected={isMultiSelected}
+                  aria-current={isActive ? "true" : undefined}
+                  aria-pressed={isExportSelected}
                   onClick={(event) => onSelectConversationRow(event, item.id)}
                   onContextMenu={(event) => handleSessionContextPopup(event, item.id)}
                 >

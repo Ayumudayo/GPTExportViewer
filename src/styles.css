@@ -415,13 +415,13 @@ input:focus-visible {
 }
 
 .conversation-row.selected {
-  background: linear-gradient(90deg, var(--selected-bg), var(--selected-bg-2));
-  box-shadow: inset 3px 0 0 var(--green);
+  background: #14191d;
+  box-shadow: inset 3px 0 0 var(--muted-2);
 }
 
 .conversation-row.multi-selected {
-  background: #111c18;
-  box-shadow: inset 3px 0 0 rgba(107, 214, 157, 0.42);
+  background: var(--green-soft);
+  box-shadow: inset 3px 0 0 var(--green);
 }
 
 .conversation-row.selected.multi-selected {
