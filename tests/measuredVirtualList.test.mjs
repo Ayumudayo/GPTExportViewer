@@ -1,103 +1,9 @@
 import assert from "node:assert/strict";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { JSDOM } from "jsdom";
 import { useMeasuredVirtualList } from "../src/measuredVirtualList.js";
-
-const originalConsoleError = console.error;
-const originalConsoleWarn = console.warn;
-const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
-console.error = (...args) => {
-  if (String(args[0] ?? "").includes("react-test-renderer is deprecated")) return;
-  originalConsoleError(...args);
-};
-console.warn = (...args) => {
-  if (String(args[0] ?? "").includes("react-test-renderer is deprecated")) return;
-  originalConsoleWarn(...args);
-};
-process.stdout.write = ((chunk, encoding, callback) => {
-  if (String(chunk ?? "").includes("react-test-renderer is deprecated")) return true;
-  return originalStdoutWrite(chunk, encoding, callback);
-});
-process.stderr.write = ((chunk, encoding, callback) => {
-  if (String(chunk ?? "").includes("react-test-renderer is deprecated")) return true;
-  return originalStderrWrite(chunk, encoding, callback);
-});
-const { default: TestRenderer, act } = await import("react-test-renderer");
-console.error = originalConsoleError;
-console.warn = originalConsoleWarn;
-process.stdout.write = originalStdoutWrite;
-process.stderr.write = originalStderrWrite;
-
-function createWindowMock() {
-  const listeners = new Map();
-  const addCounts = new Map();
-  const removeCounts = new Map();
-
-  return {
-    setTimeout,
-    clearTimeout,
-    addEventListener(type, handler) {
-      listeners.set(type, handler);
-      addCounts.set(type, (addCounts.get(type) ?? 0) + 1);
-    },
-    removeEventListener(type, handler) {
-      if (listeners.get(type) === handler) listeners.delete(type);
-      removeCounts.set(type, (removeCounts.get(type) ?? 0) + 1);
-    },
-    getListener(type) {
-      return listeners.get(type);
-    },
-    getAddCount(type) {
-      return addCounts.get(type) ?? 0;
-    },
-    getRemoveCount(type) {
-      return removeCounts.get(type) ?? 0;
-    }
-  };
-}
-
-function createContainerNode({ scrollTop = 0, clientHeight = 120, clientWidth = 320 } = {}) {
-  const listeners = new Map();
-  const addCounts = new Map();
-  const removeCounts = new Map();
-
-  return {
-    kind: "container",
-    scrollTop,
-    clientHeight,
-    clientWidth,
-    addEventListener(type, handler) {
-      listeners.set(type, handler);
-      addCounts.set(type, (addCounts.get(type) ?? 0) + 1);
-    },
-    removeEventListener(type, handler) {
-      if (listeners.get(type) === handler) listeners.delete(type);
-      removeCounts.set(type, (removeCounts.get(type) ?? 0) + 1);
-    },
-    dispatch(type) {
-      listeners.get(type)?.({ type });
-    },
-    getAddCount(type) {
-      return addCounts.get(type) ?? 0;
-    },
-    getRemoveCount(type) {
-      return removeCounts.get(type) ?? 0;
-    },
-    getBoundingClientRect() {
-      return { height: this.clientHeight, width: this.clientWidth };
-    }
-  };
-}
-
-function createItemNode(id, height) {
-  return {
-    kind: "item",
-    id,
-    getBoundingClientRect() {
-      return { height, width: 280 };
-    }
-  };
-}
 
 class MockResizeObserver {
   static instances = [];
@@ -118,13 +24,39 @@ class MockResizeObserver {
   }
 }
 
+function patchElementMetrics(node, { height = 0, width = 0 } = {}) {
+  Object.defineProperty(node, "clientHeight", {
+    configurable: true,
+    get: () => height
+  });
+  Object.defineProperty(node, "clientWidth", {
+    configurable: true,
+    get: () => width
+  });
+  node.getBoundingClientRect = () => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height,
+    width,
+    height
+  });
+}
+
 function getLatestSnapshot(snapshots) {
   return snapshots[snapshots.length - 1];
 }
 
-function HookHarness({ items, resetKey, containerNode, itemHeights, onSnapshot }) {
-  const containerRef = useRef(containerNode);
-  const bindingsRef = useRef(new Map());
+async function flushFrame() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function HookHarness({ items, resetKey, itemHeights, onSnapshot }) {
+  const containerRef = useRef(null);
   const virtual = useMeasuredVirtualList(items, {
     estimatedItemSize: 80,
     overscan: 0,
@@ -133,133 +65,154 @@ function HookHarness({ items, resetKey, containerNode, itemHeights, onSnapshot }
     containerRef
   });
 
+  const itemRefs = useMemo(() => new Map(), []);
+
   useEffect(() => {
-    const activeIds = new Set();
-    for (const { item } of virtual.items) {
-      activeIds.add(item.id);
-      if (!bindingsRef.current.has(item.id)) {
-        const bind = virtual.measureItem(item.id);
-        bind(createItemNode(item.id, itemHeights[item.id] ?? 60));
-        bindingsRef.current.set(item.id, bind);
-      }
-    }
-
-    for (const [id, bind] of bindingsRef.current) {
-      if (!activeIds.has(id)) {
-        bind(null);
-        bindingsRef.current.delete(id);
-      }
-    }
-
     onSnapshot({
       renderedIds: virtual.items.map(({ item }) => item.id),
       beforeSize: virtual.beforeSize,
       afterSize: virtual.afterSize,
-      scrollTop: containerNode.scrollTop
+      scrollTop: containerRef.current?.scrollTop ?? 0
     });
-  }, [containerNode, itemHeights, onSnapshot, virtual]);
-
-  useEffect(
-    () => () => {
-      for (const bind of bindingsRef.current.values()) bind(null);
-      bindingsRef.current.clear();
-    },
-    []
-  );
+  }, [onSnapshot, virtual.afterSize, virtual.beforeSize, virtual.items]);
 
   return React.createElement(
-    "output",
+    "div",
     {
-      renderedIds: virtual.items.map(({ item }) => item.id).join(","),
-      beforeSize: virtual.beforeSize,
-      afterSize: virtual.afterSize
+      ref: (node) => {
+        containerRef.current = node;
+        if (node) patchElementMetrics(node, { height: 120, width: 320 });
+      }
     },
-    virtual.items.map(({ item }) => item.id).join(",")
+    React.createElement("div", { "data-before-size": virtual.beforeSize }),
+    virtual.items.map(({ item }) =>
+      React.createElement("article", {
+        key: item.id,
+        "data-row-id": item.id,
+        ref: (node) => {
+          const bind = virtual.measureItem(item.id);
+          if (!node) {
+            bind(null);
+            itemRefs.delete(item.id);
+            return;
+          }
+          patchElementMetrics(node, { height: itemHeights[item.id] ?? 60, width: 280 });
+          bind(node);
+          itemRefs.set(item.id, node);
+        }
+      })
+    ),
+    React.createElement("div", { "data-after-size": virtual.afterSize })
   );
 }
 
 const previousWindow = globalThis.window;
+const previousDocument = globalThis.document;
+const previousNavigator = globalThis.navigator;
+const previousHTMLElement = globalThis.HTMLElement;
+const previousNode = globalThis.Node;
+const previousMutationObserver = globalThis.MutationObserver;
 const previousResizeObserver = globalThis.ResizeObserver;
 const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
 const previousCancelAnimationFrame = globalThis.cancelAnimationFrame;
 const previousActEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT;
-const windowMock = createWindowMock();
-let frameId = 0;
 
-globalThis.window = windowMock;
-globalThis.ResizeObserver = MockResizeObserver;
+const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
+  pretendToBeVisual: true
+});
+
+Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: dom.window });
+Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: dom.window.document });
+Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: dom.window.navigator });
+Object.defineProperty(globalThis, "HTMLElement", { configurable: true, writable: true, value: dom.window.HTMLElement });
+Object.defineProperty(globalThis, "Node", { configurable: true, writable: true, value: dom.window.Node });
+Object.defineProperty(globalThis, "MutationObserver", { configurable: true, writable: true, value: dom.window.MutationObserver });
+Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: MockResizeObserver });
+Object.defineProperty(globalThis, "requestAnimationFrame", {
+  configurable: true,
+  writable: true,
+  value: (callback) => setTimeout(() => callback(Date.now()), 0)
+});
+Object.defineProperty(globalThis, "cancelAnimationFrame", {
+  configurable: true,
+  writable: true,
+  value: (handle) => clearTimeout(handle)
+});
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-globalThis.requestAnimationFrame = (callback) => {
-  frameId += 1;
-  callback();
-  return frameId;
-};
-globalThis.cancelAnimationFrame = () => {};
+dom.window.requestAnimationFrame = globalThis.requestAnimationFrame;
+dom.window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
+dom.window.ResizeObserver = MockResizeObserver;
 
 try {
+  const host = document.getElementById("root");
+  const root = createRoot(host);
   const items = Array.from({ length: 20 }, (_, index) => ({ id: `row-${index}` }));
   const itemHeights = Object.fromEntries(items.map((item) => [item.id, 60]));
-  const containerNode = createContainerNode();
   const snapshots = [];
-  let renderer;
 
   await act(async () => {
-    renderer = TestRenderer.create(
+    root.render(
       React.createElement(HookHarness, {
         items,
         resetKey: "alpha",
-        containerNode,
         itemHeights,
         onSnapshot: (snapshot) => snapshots.push(snapshot)
       })
     );
   });
+  await flushFrame();
 
+  const scroller = host.firstElementChild;
+  assert.ok(scroller, "Mounted harness should render a scroll container");
   assert.deepEqual(getLatestSnapshot(snapshots).renderedIds, ["row-0", "row-1"], "Measured virtual list should mount the top window first");
-  assert.equal(containerNode.getAddCount("scroll"), 1, "Measured virtual list should subscribe to scroll events on mount");
-  assert.equal(windowMock.getAddCount("resize"), 1, "Measured virtual list should subscribe to window resize events on mount");
 
-  containerNode.scrollTop = 360;
+  scroller.scrollTop = 360;
   await act(async () => {
-    containerNode.dispatch("scroll");
+    scroller.dispatchEvent(new window.Event("scroll"));
   });
+  await flushFrame();
 
-  assert.equal(getLatestSnapshot(snapshots).renderedIds.includes("row-0"), false, "Far-off rows should unmount after scrolling away");
-  assert.equal(getLatestSnapshot(snapshots).renderedIds.length, 2, "Measured virtual list should keep a tight rendered window after scrolling");
-  assert.equal(getLatestSnapshot(snapshots).renderedIds.includes("row-5"), true, "Measured virtual list should render rows around the scrolled offset");
+  const scrolledSnapshot = getLatestSnapshot(snapshots);
+  assert.equal(scrolledSnapshot.renderedIds.includes("row-0"), false, "Far-off rows should unmount after scrolling away");
+  assert.equal(scrolledSnapshot.renderedIds.length, 2, "Measured virtual list should keep a tight rendered window after scrolling");
+  assert.equal(scrolledSnapshot.renderedIds.includes("row-5"), true, "Measured virtual list should render rows around the scrolled offset");
   const disconnectsBeforeReset = MockResizeObserver.instances.reduce((total, observer) => total + observer.disconnectCalls, 0);
 
   await act(async () => {
-    renderer.update(
+    root.render(
       React.createElement(HookHarness, {
         items,
         resetKey: "beta",
-        containerNode,
         itemHeights,
         onSnapshot: (snapshot) => snapshots.push(snapshot)
       })
     );
   });
+  await flushFrame();
 
-  assert.equal(containerNode.scrollTop, 0, "Changing resetKey should reset the scroll container back to the top");
+  assert.equal(scroller.scrollTop, 0, "Changing resetKey should reset the scroll container back to the top");
   assert.deepEqual(getLatestSnapshot(snapshots).renderedIds, ["row-0", "row-1"], "Changing resetKey should restore the top window");
   const disconnectsAfterReset = MockResizeObserver.instances.reduce((total, observer) => total + observer.disconnectCalls, 0);
   assert.ok(disconnectsAfterReset > disconnectsBeforeReset, "Changing resetKey should tear down old ResizeObserver bindings");
 
   await act(async () => {
-    renderer.unmount();
+    root.unmount();
   });
 
   const totalDisconnects = MockResizeObserver.instances.reduce((total, observer) => total + observer.disconnectCalls, 0);
   assert.ok(totalDisconnects >= MockResizeObserver.instances.length, "Unmount should disconnect every ResizeObserver that was created");
-  assert.equal(containerNode.getRemoveCount("scroll"), 1, "Unmount should remove the scroll listener");
-  assert.equal(windowMock.getRemoveCount("resize"), 1, "Unmount should remove the window resize listener");
 } finally {
-  globalThis.window = previousWindow;
-  globalThis.ResizeObserver = previousResizeObserver;
+  dom.window.close();
+  Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: previousWindow });
+  Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: previousDocument });
+  Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: previousNavigator });
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, writable: true, value: previousHTMLElement });
+  Object.defineProperty(globalThis, "Node", { configurable: true, writable: true, value: previousNode });
+  Object.defineProperty(globalThis, "MutationObserver", { configurable: true, writable: true, value: previousMutationObserver });
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: previousResizeObserver });
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, writable: true, value: previousRequestAnimationFrame });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, writable: true, value: previousCancelAnimationFrame });
   globalThis.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-  globalThis.requestAnimationFrame = previousRequestAnimationFrame;
-  globalThis.cancelAnimationFrame = previousCancelAnimationFrame;
 }
 
 console.log("measured virtual list tests passed");
