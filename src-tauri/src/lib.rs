@@ -13,6 +13,8 @@ pub mod state;
 pub mod time;
 pub mod webview2;
 
+use unicode_normalization::UnicodeNormalization;
+
 pub fn run() {
     if let Err(error) = webview2::preflight_webview2_runtime() {
         show_startup_error(&error.to_string());
@@ -67,7 +69,7 @@ fn asset_response(state: &state::AppState, uri: String) -> tauri::http::Response
             )
             .header(
                 tauri::http::header::CONTENT_DISPOSITION,
-                format!("inline; filename=\"{}\"", header_filename(&asset.file_name)),
+                content_disposition_header(&asset.file_name),
             )
             .header("x-content-type-options", "nosniff")
             .header(tauri::http::header::CACHE_CONTROL, "private, max-age=3600")
@@ -105,16 +107,100 @@ fn status_text(status: tauri::http::StatusCode) -> &'static str {
 }
 
 fn header_filename(value: &str) -> String {
-    value
+    let filename: String = normalized_header_value(value)
         .chars()
         .map(|ch| {
-            if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
+            if ch.is_ascii_graphic()
+                && !matches!(
+                    ch,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | ';'
+                )
+            {
                 ch
             } else {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if filename.is_empty() {
+        "download".to_string()
+    } else {
+        filename
+    }
+}
+
+fn content_disposition_header(value: &str) -> String {
+    format!(
+        "inline; filename=\"{}\"; filename*=UTF-8''{}",
+        header_filename(value),
+        rfc5987_filename(value)
+    )
+}
+
+fn rfc5987_filename(value: &str) -> String {
+    let mut encoded = String::new();
+    let normalized = normalized_header_value(value);
+    for byte in normalized.as_bytes() {
+        if is_rfc5987_attr_char(*byte) {
+            encoded.push(*byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    if encoded.is_empty() {
+        "download".to_string()
+    } else {
+        encoded
+    }
+}
+
+fn normalized_header_value(value: &str) -> String {
+    value.trim().nfc().collect()
+}
+
+fn is_rfc5987_attr_char(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'&'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~'
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_disposition_header;
+
+    #[test]
+    fn content_disposition_encodes_unicode_filename_parameter() {
+        let header = content_disposition_header("한글 이미지.png");
+        assert!(header.contains("filename=\"______.png\""));
+        assert!(header
+            .contains("filename*=UTF-8''%ED%95%9C%EA%B8%80%20%EC%9D%B4%EB%AF%B8%EC%A7%80.png"));
+    }
+
+    #[test]
+    fn content_disposition_uses_windows_safe_ascii_fallback() {
+        assert_eq!(
+            content_disposition_header("a:b?.png"),
+            "inline; filename=\"a_b_.png\"; filename*=UTF-8''a%3Ab%3F.png"
+        );
+    }
 }
 
 #[cfg(windows)]

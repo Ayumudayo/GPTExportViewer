@@ -10,10 +10,18 @@ import { buildConversationSummaryIndex } from "../server/conversations/conversat
 import { readJson, writeJsonAtomic } from "../server/cache/jsonCache.mjs";
 import { scanExports } from "../server/exports/scanExports.mjs";
 import { createWindowsFolderDialogInvocation } from "../server/settings/nativeFolderPicker.mjs";
+import { contentDispositionHeader } from "../server/http/assetStream.mjs";
+import { safeCacheName } from "../server/utils/fsGuards.mjs";
 
 const fixture = await makeFixtureExportRoot();
 
 try {
+  assert.equal(safeCacheName("U\u0308ber 한글"), "Über_한글");
+  assert.equal(
+    contentDispositionHeader("a:b?.png"),
+    "inline; filename=\"a_b_.png\"; filename*=UTF-8''a%3Ab%3F.png"
+  );
+
   const exports = await scanExports(fixture.root);
   assert.equal(exports.length, 2);
   const goodExport = exports.find((item) => item.name === "chatgpt-export-good");
@@ -49,7 +57,7 @@ try {
   assert.equal(library.items.length, 2);
   const linkedImage = library.items.find((item) => item.fileId === "file-img-1");
   const missingImage = library.items.find((item) => item.fileId === "file-img-missing");
-  assert.equal(linkedImage.displayName, "renamed library.png");
+  assert.equal(linkedImage.displayName, "한글 이미지.png");
   assert.equal(linkedImage.sourceState, "linked");
   assert.equal(missingImage.exists, false);
 
@@ -174,7 +182,13 @@ try {
     const archivedResponse = await fetch(`${baseUrl}/api/conversations?exportId=${encodeURIComponent(exportId)}&filter=archived&limit=10`);
     assert.equal(archivedResponse.status, 200);
     const archivedPayload = await archivedResponse.json();
-    assert.deepEqual(archivedPayload.items.map((item) => item.title), ["Beta notes"]);
+    assert.deepEqual(archivedPayload.items.map((item) => item.title), ["Über 한글 메모"]);
+
+    const decomposedQuery = encodeURIComponent("u\u0308ber");
+    const unicodeQueryResponse = await fetch(`${baseUrl}/api/conversations?exportId=${encodeURIComponent(exportId)}&query=${decomposedQuery}&limit=10`);
+    assert.equal(unicodeQueryResponse.status, 200);
+    const unicodeQueryPayload = await unicodeQueryResponse.json();
+    assert.deepEqual(unicodeQueryPayload.items.map((item) => item.title), ["Über 한글 메모"]);
 
     const activeResponse = await fetch(`${baseUrl}/api/conversations?exportId=${encodeURIComponent(exportId)}&filter=active&limit=10`);
     assert.equal(activeResponse.status, 200);
@@ -213,6 +227,7 @@ try {
       assert.equal((await stat(item.path)).isFile(), true);
     }
     assert.equal(path.basename(sessionExportPayload.items[0].path), "2024-03-09-16-10-00.000--Alpha_image_work-conv-1.json");
+    assert.equal(path.basename(sessionExportPayload.items[1].path), "2024-03-09-16-16-40.000--Über_한글_메모-conv-2.json");
     const savedSession = JSON.parse(await readFile(sessionExportPayload.items[0].path, "utf8"));
     assert.ok(savedSession.mapping);
     assert.equal(Object.hasOwn(savedSession, "messages"), false);
@@ -238,9 +253,18 @@ try {
     assert.equal(libraryPayload.page.nextCursor, "1");
     assert.equal(Boolean(libraryPayload.items[0].assetUrl), true);
 
+    const unicodeLibraryResponse = await fetch(`${baseUrl}/api/library?exportId=${encodeURIComponent(exportId)}&query=${decomposedQuery}&limit=10`);
+    assert.equal(unicodeLibraryResponse.status, 200);
+    const unicodeLibraryPayload = await unicodeLibraryResponse.json();
+    assert.deepEqual(unicodeLibraryPayload.items.map((item) => item.displayName), ["Über 누락.png"]);
+
     const assetResponse = await fetch(`${baseUrl}/api/assets/file-img-1?exportId=${encodeURIComponent(exportId)}`);
     assert.equal(assetResponse.status, 200);
     assert.equal(assetResponse.headers.get("content-type"), "image/png");
+    assert.equal(
+      assetResponse.headers.get("content-disposition"),
+      "inline; filename=\"______.png\"; filename*=UTF-8''%ED%95%9C%EA%B8%80%20%EC%9D%B4%EB%AF%B8%EC%A7%80.png"
+    );
     const assetBytes = new Uint8Array(await assetResponse.arrayBuffer());
     assert.equal(assetBytes[0], 0x89);
     assert.equal(assetBytes[1], 0x50);

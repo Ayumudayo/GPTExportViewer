@@ -204,26 +204,31 @@ function validateConversationIds(conversationIds) {
 }
 
 function filterConversations(items, searchParams) {
-  const query = searchParams.get("query")?.toLowerCase();
+  const query = normalizedSearchText(searchParams.get("query"));
   const filter = searchParams.get("filter") ?? "all";
   return items.filter((item) => {
     if (filter === "archived" && !item.archived) return false;
     if (filter === "active" && item.archived) return false;
     if (!query) return true;
-    return [item.title, item.preview, item.model, item.id].some((value) => String(value ?? "").toLowerCase().includes(query));
+    return [item.title, item.preview, item.model, item.id].some((value) => normalizedSearchText(value)?.includes(query));
   });
 }
 
 function filterLibrary(items, searchParams) {
-  const query = searchParams.get("query")?.toLowerCase();
+  const query = normalizedSearchText(searchParams.get("query"));
   const filter = searchParams.get("filter") ?? "all";
   return items.filter((item) => {
     if (filter !== "all" && item.sourceState !== filter) return false;
     if (!query) return true;
     return [item.displayName, item.mime, item.fileId, item.sourceConversationId].some((value) =>
-      String(value ?? "").toLowerCase().includes(query)
+      normalizedSearchText(value)?.includes(query)
     );
   });
+}
+
+function normalizedSearchText(value) {
+  const normalized = String(value ?? "").normalize("NFC").trim().toLowerCase();
+  return normalized || undefined;
 }
 
 function withAssetUrl(item, exportId) {

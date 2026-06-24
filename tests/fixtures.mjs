@@ -63,7 +63,7 @@ export async function makeFixtureExportRoot() {
     },
     {
       id: "conv-2",
-      title: "Beta notes",
+      title: "Über 한글 메모",
       create_time: 1710000900,
       update_time: 1710001000,
       is_archived: true,
@@ -144,7 +144,7 @@ export async function makeFixtureExportRoot() {
     },
     {
       file_id: "file-img-missing",
-      file_name: "missing.png",
+      file_name: "Über 누락.png",
       mime_type: "image/png",
       file_size_bytes: 99,
       created_at: "2024-03-09T16:00:05Z",
@@ -153,7 +153,7 @@ export async function makeFixtureExportRoot() {
     }
   ]);
   await writeJson(path.join(good, "conversation_asset_file_names.json"), {
-    "file-img-1.dat": "renamed library.png"
+    "file-img-1.dat": "한글 이미지.png"
   });
   await writeFile(path.join(good, "file-img-1.dat"), tinyPng);
 

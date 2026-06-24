@@ -91,6 +91,18 @@ fn commands_get_conversations_library_and_conversation_pages() {
     assert_eq!(conversations.items[0].title, "Alpha image work");
     assert_eq!(conversations.stats.total_conversations, 2);
 
+    let unicode_conversations = state
+        .get_conversations_response(
+            Some(export_id.clone()),
+            Some("u\u{0308}ber".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(unicode_conversations.items.len(), 1);
+    assert_eq!(unicode_conversations.items[0].title, "Über 한글 메모");
+
     let library = state
         .get_library_response(
             Some(export_id.clone()),
@@ -105,6 +117,21 @@ fn commands_get_conversations_library_and_conversation_pages() {
     assert!(library.items[0]
         .asset_url
         .starts_with("gpt-export-asset://library/"));
+
+    let unicode_library = state
+        .get_library_response(
+            Some(export_id.clone()),
+            Some("u\u{0308}ber".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(unicode_library.items.len(), 1);
+    assert_eq!(
+        unicode_library.items[0].item.display_name,
+        "Über 이미지.png"
+    );
 
     let conversation = state
         .get_conversation_response(Some(export_id), "conv-1".to_string(), Some(0), Some(1))
@@ -262,6 +289,14 @@ fn commands_save_multiple_sessions_writes_each_file_and_reports_progress() {
 
     assert_eq!(response.items.len(), 2);
     assert!(response.items.iter().all(|item| item.path.exists()));
+    assert_eq!(
+        response.items[1]
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
+        "2024-03-09-16-16-40.000--Über_한글_메모-conv-2.json"
+    );
 
     let captured = captured.lock().unwrap();
     assert_eq!(captured.len(), 2);
@@ -369,7 +404,7 @@ fn write_export_fixture(root: &Path) {
             },
             {
                 "id": "conv-2",
-                "title": "Archived notes",
+                "title": "Über 한글 메모",
                 "create_time": 1710001000,
                 "update_time": 1710001000,
                 "is_archived": true,
@@ -404,7 +439,7 @@ fn write_export_fixture(root: &Path) {
             },
             {
                 "file_id": "file-img-2",
-                "file_name": "standalone.png",
+                "file_name": "Über 이미지.png",
                 "mime_type": "image/png",
                 "file_size_bytes": 8,
                 "created_at": "2024-03-09T16:00:03Z",

@@ -58,6 +58,11 @@ fn foundations_safe_file_ids_reject_path_traversal() {
 }
 
 #[test]
+fn foundations_safe_cache_names_preserve_unicode_and_normalize() {
+    assert_eq!(fs_guards::safe_cache_name("U\u{0308}ber 한글"), "Über_한글");
+}
+
+#[test]
 fn foundations_cache_writes_json_atomically_and_compares_fingerprints() {
     let temp = TempDir::new().unwrap();
     let cache_file = temp.path().join("nested/sample.json");
@@ -293,8 +298,13 @@ fn library_asset_protocol_accepts_only_library_urls() {
             .unwrap();
     assert_eq!(parsed.export_id, "export 1");
     assert_eq!(parsed.file_id, "file-img-1");
+    let unicode =
+        asset_protocol::parse_asset_url("gpt-export-asset://library/%C3%9Cber-export/file-img-1")
+            .unwrap();
+    assert_eq!(unicode.export_id, "Über-export");
     assert!(asset_protocol::parse_asset_url("gpt-export-asset://other/export/file").is_err());
     assert!(asset_protocol::parse_asset_url("file:///C:/secret.png").is_err());
+    assert!(asset_protocol::parse_asset_url("gpt-export-asset://library/%FF/file-img-1").is_err());
 }
 
 struct Fixture {

@@ -32,14 +32,19 @@ pub fn parse_asset_url(url: &str) -> AppResult<ParsedAssetUrl> {
         return Err(AppError::InvalidFileId);
     }
 
-    let export_id = percent_decode_str(export_id)
-        .decode_utf8_lossy()
-        .to_string();
-    let file_id = percent_decode_str(file_id).decode_utf8_lossy().to_string();
+    let export_id = decode_segment(export_id)?;
+    let file_id = decode_segment(file_id)?;
     assert_safe_file_id(&file_id)?;
     if export_id.is_empty() {
         return Err(AppError::InvalidFileId);
     }
 
     Ok(ParsedAssetUrl { export_id, file_id })
+}
+
+fn decode_segment(value: &str) -> AppResult<String> {
+    percent_decode_str(value)
+        .decode_utf8()
+        .map(|decoded| decoded.into_owned())
+        .map_err(|_| AppError::InvalidFileId)
 }

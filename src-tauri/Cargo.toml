@@ -25,6 +25,7 @@ percent-encoding = "2"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-dialog = "2.7.1"
 thiserror = "2"
+unicode-normalization = "0.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]

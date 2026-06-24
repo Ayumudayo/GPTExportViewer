@@ -30,5 +30,11 @@ export function isInside(basePath, targetPath) {
 }
 
 export function safeCacheName(value) {
-  return String(value).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180);
+  const normalized = String(value ?? "").normalize("NFC").trim();
+  const safe = Array.from(normalized)
+    .map((char) => (/[\u0000-\u001f\u007f<>:"/\\|?*\s]/u.test(char) ? "_" : char))
+    .join("")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return Array.from(safe || "untitled").slice(0, 180).join("");
 }

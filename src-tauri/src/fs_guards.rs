@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::errors::{AppError, AppResult};
 
 pub fn assert_safe_file_id(file_id: &str) -> AppResult<&str> {
@@ -88,17 +90,40 @@ pub fn resolve_absolute(path: &Path) -> PathBuf {
 }
 
 pub fn safe_cache_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-                ch
-            } else {
-                '_'
+    let mut output = String::new();
+    let mut last_was_underscore = false;
+    for ch in value.trim().nfc() {
+        let next = if ch.is_control()
+            || ch.is_whitespace()
+            || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        {
+            '_'
+        } else {
+            ch
+        };
+
+        if next == '_' {
+            if !last_was_underscore && !output.is_empty() {
+                output.push(next);
             }
-        })
-        .take(180)
-        .collect()
+            last_was_underscore = true;
+        } else {
+            output.push(next);
+            last_was_underscore = false;
+        }
+        if output.chars().count() >= 180 {
+            break;
+        }
+    }
+
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "untitled".to_string()
+    } else {
+        output
+    }
 }
 
 #[cfg(windows)]

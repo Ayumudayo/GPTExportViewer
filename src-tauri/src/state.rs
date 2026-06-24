@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::cache::{export_fingerprint, read_json, write_json_atomic, ExportFingerprint};
 use crate::conversations::{
@@ -452,7 +453,7 @@ fn filter_conversations(
             ]
             .into_iter()
             .flatten()
-            .any(|value| value.to_ascii_lowercase().contains(query))
+            .any(|value| normalized_search_text(value).contains(query))
         })
         .cloned()
         .collect()
@@ -482,7 +483,7 @@ fn filter_library(
             ]
             .into_iter()
             .flatten()
-            .any(|value| value.to_ascii_lowercase().contains(query))
+            .any(|value| normalized_search_text(value).contains(query))
         })
         .cloned()
         .collect()
@@ -492,7 +493,11 @@ fn normalized_query(query: Option<&str>) -> Option<String> {
     query
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
+        .map(normalized_search_text)
+}
+
+fn normalized_search_text(value: &str) -> String {
+    value.to_lowercase().nfc().collect()
 }
 
 fn asset_url(export_id: &str, file_id: &str) -> String {

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { writeJsonAtomic } from "../cache/jsonCache.mjs";
+import { safeCacheName } from "../utils/fsGuards.mjs";
 import { readConversationArray } from "./conversationSummaryIndex.mjs";
 import { getConversationId } from "./normalizeConversation.mjs";
 
@@ -43,8 +44,8 @@ export async function saveSessions({ exportItem, destinationDir, conversationIds
 
 function sessionFilename(conversation, title, conversationId) {
   const rawDate = conversation.update_time ?? conversation.updated_at ?? conversation.create_time ?? conversation.created_at ?? "unknown-date";
-  const date = safeFileSegment(dateSegment(rawDate));
-  return `${date}-${safeFileSegment(title)}-${safeFileSegment(conversationId)}.json`;
+  const date = safeCacheName(dateSegment(rawDate));
+  return `${date}-${safeCacheName(title)}-${safeCacheName(conversationId)}.json`;
 }
 
 function dateSegment(value) {
@@ -61,10 +62,4 @@ function toIsoLike(value) {
     return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
   }
   return "unknown-date";
-}
-
-function safeFileSegment(value) {
-  return String(value)
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .slice(0, 180);
 }

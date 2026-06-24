@@ -7,9 +7,3 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 docs/*
-!docs/HANDOFF.md
-!docs/superpowers/
-!docs/superpowers/specs/
-!docs/superpowers/specs/*.md
-!docs/superpowers/plans/
-!docs/superpowers/plans/*.md
