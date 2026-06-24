@@ -41,6 +41,14 @@ export function fetchLibrary(...args) {
   return selectClient().fetchLibrary(...args);
 }
 
+export function saveSessions(...args) {
+  return selectClient().saveSessions(...args);
+}
+
+export function openSavedSessionsFolder(...args) {
+  return selectClient().openSavedSessionsFolder(...args);
+}
+
 export function assetUrl(...args) {
   return selectClient().assetUrl(...args);
 }

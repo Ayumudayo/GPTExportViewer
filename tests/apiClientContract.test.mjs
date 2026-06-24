@@ -7,7 +7,11 @@ const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
 
 assert.equal(apiClient.includes("selectClient"), true, "Public API client should select the active transport");
 assert.equal(apiClient.includes("isTauriRuntime"), true, "Public API client should detect the Tauri runtime");
+assert.equal(apiClient.includes("saveSessions"), true, "Public API client should expose saveSessions");
+assert.equal(apiClient.includes("openSavedSessionsFolder"), true, "Public API client should expose openSavedSessionsFolder");
 assert.equal(httpClient.includes("/api/pick-folder"), true, "HTTP transport should retain the existing native picker endpoint");
+assert.equal(httpClient.includes("/api/sessions/export"), true, "HTTP transport should expose the session export endpoint");
+assert.equal(httpClient.includes("/api/sessions/open-folder"), true, "HTTP transport should expose the saved sessions folder endpoint");
 assert.equal(httpClient.includes("local API server is running an older build"), true, "HTTP transport should keep restart guidance");
 
 for (const command of [
@@ -18,11 +22,14 @@ for (const command of [
   "get_conversations",
   "get_conversation",
   "get_library",
-  "refresh_index"
+  "refresh_index",
+  "save_sessions",
+  "open_saved_sessions_folder"
 ]) {
   assert.equal(tauriClient.includes(command), true, `Tauri transport should invoke ${command}`);
 }
 
+assert.equal(tauriClient.includes("session-export-progress"), true, "Tauri transport should listen for session export progress");
 assert.equal(tauriClient.includes("@tauri-apps/plugin-dialog"), true, "Tauri transport should use the native dialog plugin");
 assert.equal(tauriClient.includes("gpt-export-asset://library/"), true, "Tauri asset URLs should use the custom protocol");
 assert.equal(tauriClient.includes("selectedPath"), true, "Tauri folder picker should return selectedPath");
@@ -31,15 +38,29 @@ assert.match(tauriClient, /page:\s*payload\.page/, "Tauri paged responses should
 
 const { createTauriApiClient } = await import("../src/data/tauriApiClient.js");
 const calls = [];
+const events = [];
 const client = createTauriApiClient({
   invoke: async (command, args) => {
     calls.push({ command, args });
     if (command === "get_conversations" || command === "get_library") {
       return { export: { id: "exp" }, items: [], page: { cursor: 0, limit: args.limit, total: 0, nextCursor: null }, stats: {} };
     }
+    if (command === "save_sessions") {
+      return {
+        export: { id: "exp" },
+        destinationDir: "Saved Sessions",
+        items: [],
+        progress: { exportId: "exp", total: 1, completed: 1 }
+      };
+    }
     return {};
   },
-  openDialog: async () => "E:\\OpenAI\\Exports"
+  openDialog: async () => "E:\\OpenAI\\Exports",
+  listenEvent: async (eventName, handler) => {
+    events.push(eventName);
+    handler({ payload: { exportId: "exp", total: 1, completed: 1 } });
+    return () => events.push("unlisten");
+  }
 });
 
 assert.equal(client.assetUrl("export id", "file/id"), "gpt-export-asset://library/export%20id/file%2Fid");
@@ -59,5 +80,20 @@ await client.fetchLibrary({ exportId: "exp", cursor: "12", limit: "10" });
 const libraryCall = calls.findLast((call) => call.command === "get_library");
 assert.equal(libraryCall.args.cursor, 12);
 assert.equal(libraryCall.args.limit, 10);
+const progressPayloads = [];
+assert.deepEqual(
+  await client.saveSessions({ exportId: "exp", conversationIds: ["c1"], onProgress: (progress) => progressPayloads.push(progress) }),
+  {
+    export: { id: "exp" },
+    destinationDir: "Saved Sessions",
+    items: [],
+    progress: { exportId: "exp", total: 1, completed: 1 }
+  }
+);
+assert.equal(calls.some((call) => call.command === "save_sessions"), true);
+assert.deepEqual(events, ["session-export-progress", "unlisten"]);
+assert.deepEqual(progressPayloads, [{ exportId: "exp", total: 1, completed: 1 }]);
+await client.openSavedSessionsFolder({ exportId: "exp" });
+assert.equal(calls.some((call) => call.command === "open_saved_sessions_folder"), true);
 
 console.log("api client contract tests passed");

@@ -6,10 +6,14 @@ const COMMANDS = {
   fetchConversations: "get_conversations",
   fetchConversation: "get_conversation",
   fetchLibrary: "get_library",
-  refreshIndex: "refresh_index"
+  refreshIndex: "refresh_index",
+  saveSessions: "save_sessions",
+  openSavedSessionsFolder: "open_saved_sessions_folder"
 };
 
-export function createTauriApiClient({ invoke = invokeCommand, openDialog = openFolderDialog } = {}) {
+const SESSION_EXPORT_PROGRESS_EVENT = "session-export-progress";
+
+export function createTauriApiClient({ invoke = invokeCommand, openDialog = openFolderDialog, listenEvent = listenToEvent } = {}) {
   return {
     async fetchExports() {
       return invoke(COMMANDS.fetchExports);
@@ -53,6 +57,26 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return invoke(COMMANDS.refreshIndex, { exportId });
     },
 
+    async saveSessions({ exportId, conversationIds, onProgress }) {
+      let unlisten;
+      if (onProgress) {
+        unlisten = await listenEvent(SESSION_EXPORT_PROGRESS_EVENT, (event) => {
+          onProgress(event.payload);
+        });
+      }
+      try {
+        return await invoke(COMMANDS.saveSessions, { exportId, conversationIds });
+      } finally {
+        if (unlisten) {
+          await unlisten();
+        }
+      }
+    },
+
+    async openSavedSessionsFolder({ exportId }) {
+      return invoke(COMMANDS.openSavedSessionsFolder, { exportId });
+    },
+
     assetUrl
   };
 }
@@ -87,6 +111,14 @@ export async function fetchConversation(...args) {
 
 export async function fetchLibrary(...args) {
   return defaultClient().fetchLibrary(...args);
+}
+
+export async function saveSessions(...args) {
+  return defaultClient().saveSessions(...args);
+}
+
+export async function openSavedSessionsFolder(...args) {
+  return defaultClient().openSavedSessionsFolder(...args);
 }
 
 export function assetUrl(exportId, fileId) {
@@ -126,4 +158,9 @@ async function invokeCommand(command, args) {
 async function openFolderDialog(options) {
   const { open } = await import("@tauri-apps/plugin-dialog");
   return open(options);
+}
+
+async function listenToEvent(eventName, handler) {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(eventName, handler);
 }

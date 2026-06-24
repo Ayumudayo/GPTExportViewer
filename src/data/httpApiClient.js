@@ -38,6 +38,27 @@ export async function fetchLibrary({ exportId, query = "", filter = "all", curso
   return request(`/api/library?${queryString({ exportId, query, filter, cursor, limit })}`);
 }
 
+export async function saveSessions({ exportId, conversationIds = [], onProgress }) {
+  if (onProgress) {
+    onProgress({ exportId, total: conversationIds.length, completed: 0 });
+  }
+  const result = await request("/api/sessions/export", {
+    method: "POST",
+    body: JSON.stringify({ exportId, conversationIds })
+  });
+  if (onProgress) {
+    onProgress(result.progress);
+  }
+  return result;
+}
+
+export async function openSavedSessionsFolder({ exportId }) {
+  return request("/api/sessions/open-folder", {
+    method: "POST",
+    body: JSON.stringify({ exportId })
+  });
+}
+
 export function assetUrl(exportId, fileId) {
   return `${API_BASE}/api/assets/${encodeURIComponent(fileId)}?${queryString({ exportId })}`;
 }
