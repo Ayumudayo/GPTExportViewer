@@ -100,6 +100,9 @@ assert.equal(main.includes("sessionExportJob"), true, "Session export should tra
 assert.equal(main.includes("ExportProgressDialog"), true, "Session export should show a progress dialog");
 assert.equal(main.includes("saveSessions"), true, "UI should call the session export API");
 assert.equal(main.includes("openSavedSessionsFolder"), true, "Completed export dialog should expose folder opening");
+assert.equal(main.includes("copyMessageText"), true, "Messages should expose a copy action");
+assert.equal(main.includes("navigator.clipboard.writeText"), true, "Message copy should use the clipboard API");
+assert.equal(main.includes("message-copy-button"), true, "Messages should render a hover copy button");
 assert.equal(main.includes('sessionExportJob?.status === "running"'), true, "Session export actions should guard against re-entry while running");
 assert.equal(main.includes('className="export-progress-backdrop"'), true, "Export progress should render a dedicated backdrop wrapper");
 assert.equal(main.includes("exportDialogRef"), true, "Export dialog should keep a ref for focus management");
@@ -195,5 +198,10 @@ assert.match(styles, /body\.modal-open\s*\{[\s\S]*?overflow: hidden;[\s\S]*?\}/,
 assert.match(styles, /\.export-progress-backdrop\s*\{[\s\S]*?z-index:\s*80;[\s\S]*?\}/, "Export progress backdrop should sit above the session context menu");
 assert.match(styles, /\.export-progress-dialog\s*\{/, "Export progress dialog should use app modal styling");
 assert.match(styles, /\.progress-bar\s*\{/, "Export progress dialog should show progress visually");
+assert.match(styles, /\.message-copy-button/, "Message copy button should be styled");
+assert.match(styles, /\.message:hover\s+\.message-copy-button/, "Message copy button should appear on hover");
+assert.match(styles, /\.message:focus-within\s+\.message-copy-button/, "Message copy button should remain available on focus");
+assert.match(styles, /\.message\.user[\s\S]*justify-items:\s*end/, "User messages should align to the right");
+assert.match(styles, /\.message\.user\s+\.message-body[\s\S]*background:/, "User message body should have bubble styling");
 
 console.log("ui contract tests passed");

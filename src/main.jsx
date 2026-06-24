@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ChevronDown,
   Clock3,
+  Copy,
   Database,
   ExternalLink,
   FileDown,
@@ -1326,6 +1327,14 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
     isLoading: Boolean(busy) || loadingMore === "messages",
     onLoadMore: onLoadMoreMessages
   });
+  const copyMessageText = useCallback(async (text) => {
+    if (typeof text !== "string" || typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access can be unavailable in some runtimes; keep the action silent.
+    }
+  }, []);
 
   return (
     <main className="reader">
@@ -1351,6 +1360,9 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
           <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id}>
             <div className="avatar">{roleInitial(message.role)}</div>
             <div className="message-body">
+              <button type="button" className="message-copy-button" aria-label="Copy message" onClick={() => void copyMessageText(message.text ?? "")}>
+                <Copy size={14} />
+              </button>
               <div className="message-meta">
                 <strong>{roleLabel(message.role)}</strong>
                 <time>{formatDate(message.createdAt, "")}</time>

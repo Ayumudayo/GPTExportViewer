@@ -921,10 +921,16 @@ input:focus-visible {
 }
 
 .message {
+  position: relative;
   display: grid;
   grid-template-columns: 38px 1fr;
   gap: 12px;
   padding: 16px 0;
+}
+
+.message.user {
+  grid-template-columns: minmax(0, 1fr) 38px;
+  justify-items: end;
 }
 
 .avatar {
@@ -940,11 +946,27 @@ input:focus-visible {
 }
 
 .message.user .avatar {
+  grid-column: 2;
+  grid-row: 1;
   background: #59626b;
 }
 
 .message-body {
   min-width: 0;
+  max-width: 760px;
+  position: relative;
+  padding-right: 40px;
+}
+
+.message.user .message-body {
+  grid-column: 1;
+  justify-self: end;
+  width: min(100%, 760px);
+  max-width: min(760px, 72%);
+  padding: 12px 44px 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: #20262c;
 }
 
 .message-meta {
@@ -953,6 +975,10 @@ input:focus-visible {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 8px;
+}
+
+.message.user .message-meta {
+  justify-content: flex-end;
 }
 
 .message-meta strong {
@@ -970,6 +996,36 @@ input:focus-visible {
   margin: 0 0 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.message-copy-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(10, 13, 16, 0.84);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.message-copy-button:hover,
+.message-copy-button:focus-visible {
+  color: var(--text);
+  border-color: rgba(107, 214, 157, 0.45);
+}
+
+.message:hover .message-copy-button,
+.message:focus-within .message-copy-button {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .message-window > .auto-load-sentinel {
@@ -1907,6 +1963,14 @@ code {
 
   .message {
     grid-template-columns: 34px 1fr;
+  }
+
+  .message.user {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  .message.user .message-body {
+    max-width: min(100%, 82vw);
   }
 
   .message-meta {
