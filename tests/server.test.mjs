@@ -113,6 +113,13 @@ try {
     });
     assert.equal(nullSettingsBodyResponse.status, 400);
 
+    const primitiveSettingsBodyResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: "true"
+    });
+    assert.equal(primitiveSettingsBodyResponse.status, 400);
+
     const nullSessionExportBodyResponse = await fetch(`${baseUrl}/api/sessions/export`, {
       method: "POST",
       headers: { "content-type": "application/json" },
