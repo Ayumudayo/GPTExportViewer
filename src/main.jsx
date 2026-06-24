@@ -25,7 +25,19 @@ import {
   X,
   ZoomIn
 } from "lucide-react";
-import { assetUrl, fetchConversation, fetchConversations, fetchExports, fetchLibrary, fetchSettings, fetchStats, pickSourceFolder, updateSettings } from "./data/apiClient.js";
+import {
+  assetUrl,
+  fetchConversation,
+  fetchConversations,
+  fetchExports,
+  fetchLibrary,
+  fetchSettings,
+  fetchStats,
+  openSavedSessionsFolder,
+  pickSourceFolder,
+  saveSessions,
+  updateSettings
+} from "./data/apiClient.js";
 import { formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel, truncate } from "./data/formatters.js";
 import { getAdjacentIndex, getWheelDirection } from "./libraryNavigation.js";
 import { computeVirtualRange } from "./virtualWindow.js";
@@ -272,6 +284,7 @@ function App() {
   const [lastSelectedConversationId, setLastSelectedConversationId] = useState("");
   const [sessionContextMenuState, setSessionContextMenu] = useState(null);
   const sessionContextMenu = sessionContextMenuState;
+  const [sessionExportJob, setSessionExportJob] = useState(null);
   const [conversation, setConversation] = useState(null);
   const [library, setLibrary] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState("");
@@ -541,9 +554,97 @@ function App() {
     [selectedConversationIds]
   );
 
-  const exportSelectedSessions = useCallback(() => {
+  const exportSelectedSessions = useCallback(async () => {
     closeSessionContextMenu();
-  }, [closeSessionContextMenu]);
+    const conversationIds = selectedConversationIds.length
+      ? selectedConversationIds
+      : selectedConversationId
+        ? [selectedConversationId]
+        : [];
+    if (!selectedExportId || !conversationIds.length) return;
+
+    setError("");
+    setSessionExportJob({
+      status: "running",
+      total: conversationIds.length,
+      completed: 0,
+      exportId: selectedExportId,
+      destinationDir: "",
+      items: [],
+      error: ""
+    });
+
+    try {
+      const payload = await saveSessions({
+        exportId: selectedExportId,
+        conversationIds,
+        onProgress: (progress) => {
+          setSessionExportJob((current) =>
+            current
+              ? {
+                  ...current,
+                  total: progress?.total ?? current.total,
+                  completed: progress?.completed ?? current.completed,
+                  exportId: progress?.exportId ?? current.exportId,
+                  status: "running"
+                }
+              : current
+          );
+        }
+      });
+
+      setSessionExportJob({
+        status: "done",
+        total: payload?.progress?.total ?? conversationIds.length,
+        completed: payload?.progress?.completed ?? payload?.items?.length ?? 0,
+        exportId: payload?.export?.id ?? selectedExportId,
+        destinationDir: payload?.destinationDir ?? "",
+        items: payload?.items ?? [],
+        error: ""
+      });
+    } catch (nextError) {
+      const message = nextError?.message ?? "Failed to export sessions";
+      setSessionExportJob((current) => ({
+        status: "error",
+        total: current?.total ?? conversationIds.length,
+        completed: current?.completed ?? 0,
+        exportId: current?.exportId ?? selectedExportId,
+        destinationDir: current?.destinationDir ?? "",
+        items: current?.items ?? [],
+        error: message
+      }));
+      setError(message);
+    }
+  }, [selectedConversationId, selectedConversationIds, selectedExportId, closeSessionContextMenu]);
+
+  const closeExportProgressDialog = useCallback(() => {
+    setSessionExportJob((current) => (current?.status === "running" ? current : null));
+  }, []);
+
+  const openExportFolder = useCallback(async () => {
+    if (!sessionExportJob?.exportId) return;
+    try {
+      const payload = await openSavedSessionsFolder({ exportId: sessionExportJob.exportId });
+      setSessionExportJob((current) =>
+        current
+          ? {
+              ...current,
+              destinationDir: current.destinationDir || payload?.path || ""
+            }
+          : current
+      );
+    } catch (nextError) {
+      const message = nextError?.message ?? "Failed to open export folder";
+      setSessionExportJob((current) =>
+        current
+          ? {
+              ...current,
+              error: message
+            }
+          : current
+      );
+    }
+  }, [sessionExportJob?.exportId]);
 
   useEffect(() => {
     if (!sessionContextMenuState) return;
@@ -774,6 +875,8 @@ function App() {
         onClose={closeSessionContextMenu}
       />
 
+      <ExportProgressDialog job={sessionExportJob} onOpenFolder={openExportFolder} onClose={closeExportProgressDialog} />
+
       {lightboxOpen && selectedImage && (
         <ImageLightbox
           exportId={selectedExportId}
@@ -808,6 +911,72 @@ function SessionContextMenu({ menu, count, onExport, onClose }) {
       <button type="button" className="session-context-menu-close" aria-label="Close session context menu" onClick={onClose}>
         <X size={15} />
       </button>
+    </div>
+  );
+}
+
+function ExportProgressDialog({ job, onOpenFolder, onClose }) {
+  useEffect(() => {
+    if (!job) return undefined;
+    document.body.classList.add("modal-open");
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && job.status !== "running") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.classList.remove("modal-open");
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [job, onClose]);
+
+  if (!job) return null;
+
+  const percent = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+  const title = job.status === "done" ? "Export complete" : job.status === "error" ? "Export failed" : "Exporting sessions...";
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="export-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="export-progress-title">
+        <header>
+          <div>
+            <FileDown size={18} />
+            <h2 id="export-progress-title">{title}</h2>
+          </div>
+          {job.status !== "running" && (
+            <button type="button" className="icon-button" aria-label="Close export dialog" onClick={onClose}>
+              <X size={18} />
+            </button>
+          )}
+        </header>
+
+        <div className="progress-bar" role="progressbar" aria-label="Session export progress" aria-valuemin={0} aria-valuemax={job.total} aria-valuenow={job.completed}>
+          <span style={{ width: `${percent}%` }} />
+        </div>
+
+        <p className="export-progress-count">
+          {job.completed} / {job.total} sessions
+        </p>
+
+        {job.error && <p className="settings-error dialog-error">{job.error}</p>}
+        {job.destinationDir && <p className="export-progress-path">{job.destinationDir}</p>}
+
+        {(job.status === "done" || job.status === "error") && (
+          <footer>
+            {job.status === "done" && (
+              <button type="button" className="primary-button export-progress-open" onClick={onOpenFolder}>
+                <FolderOpen size={15} />
+                Open folder
+              </button>
+            )}
+            <button type="button" onClick={onClose}>
+              Close
+            </button>
+          </footer>
+        )}
+      </section>
     </div>
   );
 }

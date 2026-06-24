@@ -1461,6 +1461,87 @@ code {
   color: var(--muted);
 }
 
+.export-progress-dialog {
+  width: min(520px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #303941;
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.export-progress-dialog header,
+.export-progress-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.export-progress-dialog header > div,
+.export-progress-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-progress-dialog h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #0b1013;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), var(--green-dark));
+  transition: width 140ms ease;
+}
+
+.export-progress-count,
+.export-progress-path {
+  margin: 0;
+  font-size: 13px;
+}
+
+.export-progress-count {
+  color: var(--muted);
+}
+
+.export-progress-path {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel-soft);
+  word-break: break-word;
+}
+
+.dialog-error {
+  margin: 0;
+}
+
+.export-progress-dialog footer {
+  justify-content: flex-end;
+}
+
+.export-progress-dialog footer button {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  font-weight: 600;
+}
+
 .settings-dialog {
   width: min(620px, 100%);
   display: grid;
