@@ -68,10 +68,14 @@ try {
   assert.equal(pickerScript.includes("CHATGPT_EXPORT_PICKER_INITIAL_PATH"), true);
 
   const pickerCalls = [];
+  const openFolderCalls = [];
   const server = await createAppServer({
     root: fixture.root,
     cacheDir: fixture.cacheDir,
     autoIndex: true,
+    openFolder: async (folderPath) => {
+      openFolderCalls.push(folderPath);
+    },
     pickFolder: async ({ initialPath, fallbackPath }) => {
       pickerCalls.push({ initialPath, fallbackPath });
       if (initialPath === "cancel") return { canceled: true };
@@ -146,6 +150,36 @@ try {
     const threadPayload = await threadResponse.json();
     assert.equal(threadPayload.messages.length, 2);
     assert.equal(threadPayload.messages[1].text, "Here is image\nDone");
+
+    const sessionExportResponse = await fetch(`${baseUrl}/api/sessions/export`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exportId, conversationIds: ["conv-1", "conv-2"] })
+    });
+    assert.equal(sessionExportResponse.status, 200);
+    const sessionExportPayload = await sessionExportResponse.json();
+    assert.equal(sessionExportPayload.items.length, 2);
+    assert.equal(sessionExportPayload.export.id, exportId);
+    assert.equal(Object.hasOwn(sessionExportPayload.export, "paths"), false);
+    const expectedSavedSessionsDir = path.join(server.appState.savedSessionsDir, exportId);
+    assert.equal(sessionExportPayload.destinationDir, expectedSavedSessionsDir);
+    for (const item of sessionExportPayload.items) {
+      assert.equal(path.dirname(item.path), expectedSavedSessionsDir);
+      assert.equal((await stat(item.path)).isFile(), true);
+    }
+    const savedSession = JSON.parse(await readFile(sessionExportPayload.items[0].path, "utf8"));
+    assert.ok(savedSession.mapping);
+    assert.equal(Object.hasOwn(savedSession, "messages"), false);
+
+    const openSessionFolderResponse = await fetch(`${baseUrl}/api/sessions/open-folder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exportId })
+    });
+    assert.equal(openSessionFolderResponse.status, 200);
+    const openSessionFolderPayload = await openSessionFolderResponse.json();
+    assert.equal(openSessionFolderPayload.path, expectedSavedSessionsDir);
+    assert.deepEqual(openFolderCalls, [expectedSavedSessionsDir]);
 
     const parentThreadResponse = await fetch(`${baseUrl}/api/conversations/conv-parent-only?exportId=${encodeURIComponent(exportId)}&limit=2`);
     const parentThreadPayload = await parentThreadResponse.json();

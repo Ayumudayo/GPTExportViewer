@@ -1,5 +1,6 @@
 import http from "node:http";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { scanExports } from "../exports/scanExports.mjs";
 import { pickNativeFolder } from "../settings/nativeFolderPicker.mjs";
 import { readRuntimeSettings, resolveSourceRoot } from "../settings/runtimeSettings.mjs";
@@ -11,7 +12,8 @@ export async function createAppServer({
   cacheDir = path.join(process.cwd(), ".cache"),
   autoIndex = false,
   allowedOrigins = defaultAllowedOrigins(),
-  pickFolder = pickNativeFolder
+  pickFolder = pickNativeFolder,
+  openFolder = openFolderWithSystem
 } = {}) {
   if (!root) throw new Error("root is required");
   const resolvedCacheDir = path.resolve(cacheDir);
@@ -32,6 +34,8 @@ export async function createAppServer({
     indexes: new Map(),
     indexJobs: new Map(),
     pickFolder,
+    openFolder,
+    savedSessionsDir: path.join(resolvedCacheDir, "Saved Sessions"),
     allowedOrigins: new Set(allowedOrigins)
   };
   if (autoIndex) {
@@ -42,4 +46,19 @@ export async function createAppServer({
   const server = http.createServer(createRouter(state));
   server.appState = state;
   return server;
+}
+
+async function openFolderWithSystem(folderPath) {
+  const command = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, [folderPath], {
+      detached: true,
+      stdio: "ignore"
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }

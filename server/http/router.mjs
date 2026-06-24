@@ -1,5 +1,8 @@
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { indexExport } from "../cache/indexExport.mjs";
 import { loadConversation } from "../conversations/loadConversation.mjs";
+import { saveSessions } from "../conversations/saveSessions.mjs";
 import { scanExports } from "../exports/scanExports.mjs";
 import { resolveAsset } from "../library/assetResolver.mjs";
 import { publicSettings, resolveSourceRoot, writeRuntimeSettings } from "../settings/runtimeSettings.mjs";
@@ -47,6 +50,27 @@ export function createRouter(state) {
         if (picked?.canceled) return sendJson(response, 200, { folder: { canceled: true } }, cors.headers);
         const selectedPath = await resolveSourceRoot(picked?.selectedPath);
         return sendJson(response, 200, { folder: { selectedPath } }, cors.headers);
+      }
+      if (request.method === "POST" && url.pathname === "/api/sessions/export") {
+        const body = await readJsonBody(request);
+        const exportItem = getBodyExport(state, body);
+        const conversationIds = validateConversationIds(body.conversationIds);
+        const destinationDir = path.join(state.savedSessionsDir, exportItem.id);
+        const saved = await saveSessions({ exportItem, destinationDir, conversationIds });
+        return sendJson(response, 200, {
+          export: publicExport(exportItem),
+          destinationDir: saved.destinationDir,
+          items: saved.items,
+          progress: saved.progress
+        }, cors.headers);
+      }
+      if (request.method === "POST" && url.pathname === "/api/sessions/open-folder") {
+        const body = await readJsonBody(request);
+        const exportItem = getBodyExport(state, body);
+        const destinationDir = path.join(state.savedSessionsDir, exportItem.id);
+        await mkdir(destinationDir, { recursive: true });
+        await state.openFolder(destinationDir);
+        return sendJson(response, 200, { path: destinationDir }, cors.headers);
       }
       if (request.method === "POST" && url.pathname === "/api/index") {
         const exportId = url.searchParams.get("exportId");
@@ -124,7 +148,9 @@ export function createRouter(state) {
       return sendError(response, 404, "Not found", undefined, cors.headers);
     } catch (error) {
       const message = error?.message ?? "Internal server error";
-      const statusCode = message.includes("Invalid") || message.includes("required") ? 400 : message.includes("not found") ? 404 : 500;
+      const statusCode = Number.isInteger(error?.status)
+        ? error.status
+        : message.includes("Invalid") || message.includes("required") ? 400 : message.includes("not found") ? 404 : 500;
       return sendError(response, statusCode, message, undefined, cors.headers);
     }
   };
@@ -154,10 +180,27 @@ function getRequestedExport(state, url) {
   return findExport(state, exportId);
 }
 
+function getBodyExport(state, body) {
+  const exportId = body.exportId ?? state.exports[0]?.id;
+  if (!exportId) throw new Error("exportId is required");
+  return findExport(state, String(exportId));
+}
+
 function findExport(state, exportId) {
   const exportItem = state.exports.find((item) => item.id === exportId);
   if (!exportItem) throw new Error("Export not found");
   return exportItem;
+}
+
+function validateConversationIds(conversationIds) {
+  if (
+    !Array.isArray(conversationIds) ||
+    conversationIds.length === 0 ||
+    conversationIds.some((conversationId) => typeof conversationId !== "string")
+  ) {
+    throw new Error("Invalid conversationIds");
+  }
+  return conversationIds;
 }
 
 function filterConversations(items, searchParams) {
