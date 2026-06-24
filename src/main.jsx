@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -40,13 +40,14 @@ import {
   updateSettings
 } from "./data/apiClient.js";
 import { formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel, truncate } from "./data/formatters.js";
+import { computeMeasuredVirtualRange, copyMessageText as copyMessageTextToClipboard } from "./chatReaderHelpers.js";
 import { getAdjacentIndex, getWheelDirection } from "./libraryNavigation.js";
 import { computeVirtualRange } from "./virtualWindow.js";
 import "./styles.css";
 
 const CONVERSATION_ROW_SIZE = 64;
 const LIBRARY_SIDE_ROW_SIZE = 68;
-const MESSAGE_ROW_SIZE = 96;
+const ESTIMATED_MESSAGE_ROW_SIZE = 96;
 const GALLERY_ROW_SIZE = 284;
 const GALLERY_MIN_CARD_WIDTH = 176;
 const GALLERY_GAP = 14;
@@ -159,6 +160,132 @@ function useVirtualList(items, { itemSize, overscan = 8, resetKey = "" }) {
     beforeSize: range.beforeSize,
     afterSize: range.afterSize,
     items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset }))
+  };
+}
+
+function useMeasuredVirtualList(items, { estimatedItemSize, overscan = 8, resetKey = "", getItemKey = (_, index) => index }) {
+  const { containerRef, viewport } = useScrollViewport(resetKey);
+  const [measuredHeights, setMeasuredHeights] = useState({});
+  const measuredHeightsRef = useRef({});
+  const observerEntriesRef = useRef(new Map());
+  const itemRefCallbacksRef = useRef(new Map());
+  const frameRef = useRef(0);
+
+  const syncMeasuredHeights = useCallback(() => {
+    if (frameRef.current) return;
+    const schedule =
+      typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame.bind(window)
+        : (callback) => window.setTimeout(callback, 0);
+
+    frameRef.current = schedule(() => {
+      frameRef.current = 0;
+      const nextHeights = measuredHeightsRef.current;
+      setMeasuredHeights((current) => {
+        const currentKeys = Object.keys(current);
+        const nextKeys = Object.keys(nextHeights);
+        if (
+          currentKeys.length === nextKeys.length &&
+          nextKeys.every((key) => current[key] === nextHeights[key])
+        ) {
+          return current;
+        }
+        return nextHeights;
+      });
+    });
+  }, []);
+
+  const disconnectMeasuredNode = useCallback((key) => {
+    const entry = observerEntriesRef.current.get(key);
+    if (!entry) return;
+    entry.observer?.disconnect();
+    observerEntriesRef.current.delete(key);
+  }, []);
+
+  const rememberMeasuredHeight = useCallback(
+    (key, height) => {
+      const nextHeight = Math.max(1, Math.ceil(Number(height) || 0));
+      if (!Number.isFinite(nextHeight) || measuredHeightsRef.current[key] === nextHeight) return;
+      measuredHeightsRef.current = { ...measuredHeightsRef.current, [key]: nextHeight };
+      syncMeasuredHeights();
+    },
+    [syncMeasuredHeights]
+  );
+
+  const bindMeasuredNode = useCallback(
+    (key, node) => {
+      const currentEntry = observerEntriesRef.current.get(key);
+      if (currentEntry?.node === node) return;
+      disconnectMeasuredNode(key);
+      if (!node) return;
+
+      const measureNode = () => rememberMeasuredHeight(key, node.getBoundingClientRect().height);
+      let observer = null;
+      if (typeof ResizeObserver === "function") {
+        observer = new ResizeObserver((entries) => {
+          const nextHeight = entries[0]?.contentRect?.height ?? node.getBoundingClientRect().height;
+          rememberMeasuredHeight(key, nextHeight);
+        });
+        observer.observe(node);
+      }
+
+      observerEntriesRef.current.set(key, { node, observer });
+      measureNode();
+    },
+    [disconnectMeasuredNode, rememberMeasuredHeight]
+  );
+
+  const measureItem = useCallback(
+    (key) => {
+      if (!itemRefCallbacksRef.current.has(key)) {
+        itemRefCallbacksRef.current.set(key, (node) => bindMeasuredNode(key, node));
+      }
+      return itemRefCallbacksRef.current.get(key);
+    },
+    [bindMeasuredNode]
+  );
+
+  useEffect(() => {
+    for (const key of observerEntriesRef.current.keys()) disconnectMeasuredNode(key);
+    itemRefCallbacksRef.current.clear();
+    measuredHeightsRef.current = {};
+    setMeasuredHeights({});
+  }, [disconnectMeasuredNode, resetKey]);
+
+  useEffect(
+    () => () => {
+      for (const key of observerEntriesRef.current.keys()) disconnectMeasuredNode(key);
+      if (frameRef.current) {
+        if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(frameRef.current);
+        } else if (typeof window !== "undefined") {
+          window.clearTimeout(frameRef.current);
+        }
+      }
+    },
+    [disconnectMeasuredNode]
+  );
+
+  const itemKeys = useMemo(() => items.map((item, index) => String(getItemKey(item, index))), [getItemKey, items]);
+  const range = useMemo(
+    () =>
+      computeMeasuredVirtualRange({
+        itemKeys,
+        measuredHeights,
+        estimatedItemSize,
+        scrollOffset: viewport.scrollOffset,
+        viewportSize: viewport.viewportSize,
+        overscan
+      }),
+    [estimatedItemSize, itemKeys, measuredHeights, overscan, viewport.scrollOffset, viewport.viewportSize]
+  );
+
+  return {
+    containerRef,
+    beforeSize: range.beforeSize,
+    afterSize: range.afterSize,
+    items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset })),
+    measureItem
   };
 }
 
@@ -1317,10 +1444,11 @@ function Sidebar({
 function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore, onLoadMoreMessages }) {
   const title = conversation?.title ?? selectedSummary?.title ?? "No session selected";
   const messages = conversation?.messages ?? [];
-  const virtualMessages = useVirtualList(messages, {
-    itemSize: MESSAGE_ROW_SIZE,
+  const virtualMessages = useMeasuredVirtualList(messages, {
+    estimatedItemSize: ESTIMATED_MESSAGE_ROW_SIZE,
     overscan: 12,
-    resetKey
+    resetKey,
+    getItemKey: (message) => message.id
   });
   const messageAutoLoadRef = useAutoLoadMore({
     hasMore: conversation?.range?.nextStart != null,
@@ -1328,12 +1456,7 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
     onLoadMore: onLoadMoreMessages
   });
   const copyMessageText = useCallback(async (text) => {
-    if (typeof text !== "string" || typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Clipboard access can be unavailable in some runtimes; keep the action silent.
-    }
+    await copyMessageTextToClipboard(text);
   }, []);
 
   return (
@@ -1357,7 +1480,7 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
       <section className="message-window scroll-window" ref={virtualMessages.containerRef}>
         <VirtualSpacer size={virtualMessages.beforeSize} />
         {virtualMessages.items.map(({ item: message }) => (
-          <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id}>
+          <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id} ref={virtualMessages.measureItem(message.id)}>
             <div className="avatar">{roleInitial(message.role)}</div>
             <div className="message-body">
               <button type="button" className="message-copy-button" aria-label="Copy message" onClick={() => void copyMessageText(message.text ?? "")}>

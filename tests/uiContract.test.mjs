@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 const styles = await readFile("src/styles.css", "utf8");
 const main = await readFile("src/main.jsx", "utf8");
+const chatReaderHelpers = await readFile("src/chatReaderHelpers.js", "utf8");
 const apiClient = await readFile("src/data/apiClient.js", "utf8");
 const httpClient = await readFile("src/data/httpApiClient.js", "utf8");
 const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
@@ -101,7 +102,9 @@ assert.equal(main.includes("ExportProgressDialog"), true, "Session export should
 assert.equal(main.includes("saveSessions"), true, "UI should call the session export API");
 assert.equal(main.includes("openSavedSessionsFolder"), true, "Completed export dialog should expose folder opening");
 assert.equal(main.includes("copyMessageText"), true, "Messages should expose a copy action");
-assert.equal(main.includes("navigator.clipboard.writeText"), true, "Message copy should use the clipboard API");
+assert.equal(main.includes("copyMessageTextToClipboard"), true, "ChatReader should delegate message copy to the extracted helper");
+assert.equal(chatReaderHelpers.includes("navigator?.clipboard"), true, "Message copy helper should target the clipboard API when available");
+assert.equal(chatReaderHelpers.includes("writeText(text)"), true, "Message copy helper should pass the full message text to the clipboard API");
 assert.equal(main.includes("message-copy-button"), true, "Messages should render a hover copy button");
 assert.equal(main.includes('sessionExportJob?.status === "running"'), true, "Session export actions should guard against re-entry while running");
 assert.equal(main.includes('className="export-progress-backdrop"'), true, "Export progress should render a dedicated backdrop wrapper");
@@ -137,9 +140,14 @@ assert.equal(main.includes("loadingMoreKeyRef"), true, "Automatic load-more requ
 assert.equal(main.includes("latestLoadStateRef"), true, "Automatic load-more responses should be checked against the latest selection and filters before merging");
 assert.match(main, /current\.id !== payload\.id\) return current;/, "Stale message-page responses should be dropped instead of replacing the active conversation");
 assert.equal(main.includes("function useVirtualList"), true, "Long vertical lists should unmount offscreen rows");
+assert.equal(main.includes("function useMeasuredVirtualList"), true, "Variable-height chat rows should use a measured virtual list");
 assert.equal(main.includes("function useVirtualGrid"), true, "The image grid should unmount offscreen cards");
 assert.equal(main.includes("virtual-spacer"), true, "Virtualized surfaces should preserve scroll geometry with spacer elements");
 assert.match(main, /virtualMessages\.items\.map/, "ChatReader should render only the virtual message window");
+assert.equal(main.includes("useMeasuredVirtualList(messages"), true, "ChatReader should use measured virtualization for variable-height messages");
+assert.equal(main.includes("const virtualMessages = useVirtualList(messages"), false, "ChatReader should not use fixed-height virtualization for messages");
+assert.equal(main.includes("ESTIMATED_MESSAGE_ROW_SIZE"), true, "Measured message virtualization should keep an explicit estimated row size");
+assert.equal(main.includes("virtualMessages.measureItem"), true, "Rendered messages should attach a stable measurement ref for height tracking");
 assert.match(main, /virtualImages\.items\.map/, "LibraryReader should render only the virtual image-card window");
 assert.equal(main.includes("Load next range"), false, "Chat message pagination should not require a manual range button");
 assert.equal(main.includes("Load more images"), false, "Library pagination should not require a manual image button");
