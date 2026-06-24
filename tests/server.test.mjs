@@ -151,6 +151,15 @@ try {
     assert.equal(threadPayload.messages.length, 2);
     assert.equal(threadPayload.messages[1].text, "Here is image\nDone");
 
+    const expectedSavedSessionsDir = path.join(server.appState.savedSessionsDir, exportId);
+    const missingSessionResponse = await fetch(`${baseUrl}/api/sessions/export`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ exportId, conversationIds: ["missing"] })
+    });
+    assert.equal(missingSessionResponse.status, 404);
+    await assert.rejects(stat(expectedSavedSessionsDir), { code: "ENOENT" });
+
     const sessionExportResponse = await fetch(`${baseUrl}/api/sessions/export`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -160,13 +169,14 @@ try {
     const sessionExportPayload = await sessionExportResponse.json();
     assert.equal(sessionExportPayload.items.length, 2);
     assert.equal(sessionExportPayload.export.id, exportId);
-    assert.equal(Object.hasOwn(sessionExportPayload.export, "paths"), false);
-    const expectedSavedSessionsDir = path.join(server.appState.savedSessionsDir, exportId);
+    assert.equal(sessionExportPayload.export.path, undefined);
+    assert.equal(sessionExportPayload.export.paths, undefined);
     assert.equal(sessionExportPayload.destinationDir, expectedSavedSessionsDir);
     for (const item of sessionExportPayload.items) {
       assert.equal(path.dirname(item.path), expectedSavedSessionsDir);
       assert.equal((await stat(item.path)).isFile(), true);
     }
+    assert.equal(path.basename(sessionExportPayload.items[0].path), "2024-03-09-16-10-00.000--Alpha_image_work-conv-1.json");
     const savedSession = JSON.parse(await readFile(sessionExportPayload.items[0].path, "utf8"));
     assert.ok(savedSession.mapping);
     assert.equal(Object.hasOwn(savedSession, "messages"), false);

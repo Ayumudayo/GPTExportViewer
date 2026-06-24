@@ -43,8 +43,12 @@ export async function saveSessions({ exportItem, destinationDir, conversationIds
 
 function sessionFilename(conversation, title, conversationId) {
   const rawDate = conversation.update_time ?? conversation.updated_at ?? conversation.create_time ?? conversation.created_at ?? "unknown-date";
-  const date = safeFileSegment(toIsoLike(rawDate));
+  const date = safeFileSegment(dateSegment(rawDate));
   return `${date}-${safeFileSegment(title)}-${safeFileSegment(conversationId)}.json`;
+}
+
+function dateSegment(value) {
+  return toIsoLike(value).replace(/[:TZ]/g, "-");
 }
 
 function toIsoLike(value) {

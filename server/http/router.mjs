@@ -234,8 +234,15 @@ function withAssetUrl(item, exportId) {
 }
 
 function publicExport(exportItem) {
-  const { paths, modifiedAtMs, ...rest } = exportItem;
-  return rest;
+  return {
+    id: exportItem.id,
+    name: exportItem.name,
+    modifiedAt: exportItem.modifiedAt,
+    hasConversations: exportItem.hasConversations,
+    hasLibraryFiles: exportItem.hasLibraryFiles,
+    hasAssetNames: exportItem.hasAssetNames,
+    warnings: exportItem.warnings
+  };
 }
 
 async function readJsonBody(request) {
