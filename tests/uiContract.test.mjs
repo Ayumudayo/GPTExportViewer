@@ -26,6 +26,12 @@ assert.equal(main.includes('aria-label="Filter"'), false, "Filter placeholder sh
 assert.equal(main.includes("toolbar-row"), false, "Decorative chat toolbar buttons should be removed or replaced with real filters");
 assert.equal(main.includes("conversationFilter"), true, "Chat list filters should be backed by real state");
 assert.equal(main.includes("filter: conversationFilter"), true, "Chat list filters should be sent to the API");
+assert.equal(main.includes("selectedConversationIds"), true, "Session rows should track multi-selected conversation ids");
+assert.equal(main.includes("sessionContextMenu"), true, "Session rows should track context-menu popup state");
+assert.equal(main.includes("onContextMenu"), true, "Session rows should handle context-menu gestures");
+assert.equal(main.includes("event.shiftKey"), true, "Session row selection should support shift-range selection");
+assert.equal(main.includes("event.ctrlKey || event.metaKey"), true, "Session row selection should support ctrl/cmd toggles");
+assert.equal(main.includes("SessionContextMenu"), true, "Session selection should render an extracted context-menu component");
 assert.equal(main.includes("ChevronRight"), false, "Inspector panels should not show chevrons when they are not expandable");
 assert.equal(main.includes("function ResizeHandle"), true, "Pane boundaries should expose resize handles");
 assert.equal(main.includes('role="separator"'), true, "Resize handles should use the separator role");
@@ -98,5 +104,7 @@ assert.match(styles, /\.resize-handle\s*\{[\s\S]*?cursor: col-resize;[\s\S]*?\}/
 assert.match(styles, /\.settings-dialog\s*\{[\s\S]*?background: var\(--panel\);[\s\S]*?\}/, "Settings dialog should use the dark app surface");
 assert.match(styles, /\.conversation-list\s*\{[\s\S]*?overflow: auto;[\s\S]*?\}/, "Conversation list should be scrollable so its auto-load sentinel can enter view");
 assert.match(styles, /\.library-side-list\s*\{[\s\S]*?overflow: auto;[\s\S]*?\}/, "Library side list should be scrollable so its auto-load sentinel can enter view");
+assert.match(styles, /\.conversation-row\.multi-selected\s*\{/, "Multi-selected session rows should have a visible state");
+assert.match(styles, /\.session-context-menu\s*\{/, "Session context menu should have fixed popup styling");
 
 console.log("ui contract tests passed");

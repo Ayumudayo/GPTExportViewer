@@ -8,6 +8,7 @@ import {
   Clock3,
   Database,
   ExternalLink,
+  FileDown,
   FileImage,
   FolderOpen,
   HardDrive,
@@ -196,6 +197,20 @@ function VirtualSpacer({ size }) {
   return <div className="virtual-spacer" style={{ height: size }} aria-hidden="true" />;
 }
 
+function toggleSelection(current, id) {
+  return current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id];
+}
+
+function selectConversationRange(conversations, anchorId, targetId) {
+  const targetIndex = conversations.findIndex((item) => item.id === targetId);
+  const anchorIndex = conversations.findIndex((item) => item.id === anchorId);
+  if (targetIndex < 0) return [];
+  if (anchorIndex < 0) return [targetId];
+  const startIndex = Math.min(anchorIndex, targetIndex);
+  const endIndex = Math.max(anchorIndex, targetIndex);
+  return conversations.slice(startIndex, endIndex + 1).map((item) => item.id);
+}
+
 function useAutoLoadMore({ hasMore, isLoading, onLoadMore }) {
   const sentinelRef = useRef(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -245,6 +260,10 @@ function App() {
   const [libraryFilter, setLibraryFilter] = useState("all");
   const [conversations, setConversations] = useState([]);
   const [selectedConversationId, setSelectedConversationId] = useState("");
+  const [selectedConversationIds, setSelectedConversationIds] = useState([]);
+  const [lastSelectedConversationId, setLastSelectedConversationId] = useState("");
+  const [sessionContextMenuState, setSessionContextMenu] = useState(null);
+  const sessionContextMenu = sessionContextMenuState;
   const [conversation, setConversation] = useState(null);
   const [library, setLibrary] = useState([]);
   const [selectedImageId, setSelectedImageId] = useState("");
@@ -308,6 +327,12 @@ function App() {
       // Local storage is optional; resizing should still work for this session.
     }
   }, [layoutSizes]);
+
+  useEffect(() => {
+    setSelectedConversationIds([]);
+    setLastSelectedConversationId("");
+    setSessionContextMenu(null);
+  }, [mode, selectedExportId, query, conversationFilter]);
 
   useEffect(() => {
     if (!selectedExportId) return;
@@ -380,6 +405,9 @@ function App() {
         setExports(nextExports);
         setSelectedExportId(nextExports[0]?.id || "");
         setSelectedConversationId("");
+        setSelectedConversationIds([]);
+        setLastSelectedConversationId("");
+        setSessionContextMenu(null);
         setConversation(null);
         setConversations([]);
         setLibrary([]);
@@ -447,6 +475,70 @@ function App() {
       })
     );
   }, []);
+
+  const closeSessionContextMenu = useCallback(() => {
+    setSessionContextMenu(null);
+  }, []);
+
+  const selectConversationRow = useCallback(
+    (event, conversationId) => {
+      setSelectedConversationId(conversationId);
+      closeSessionContextMenu();
+
+      if (event.shiftKey) {
+        const anchorId = lastSelectedConversationId || selectedConversationId || conversationId;
+        setSelectedConversationIds(selectConversationRange(conversations, anchorId, conversationId));
+      } else if (event.ctrlKey || event.metaKey) {
+        setSelectedConversationIds((current) => toggleSelection(current, conversationId));
+      } else {
+        setSelectedConversationIds([conversationId]);
+      }
+
+      setLastSelectedConversationId(conversationId);
+    },
+    [
+      conversations,
+      lastSelectedConversationId,
+      selectedConversationId,
+      closeSessionContextMenu
+    ]
+  );
+
+  const openSessionContextMenu = useCallback(
+    (event, conversationId) => {
+      event.preventDefault();
+      setSelectedConversationId(conversationId);
+      if (!selectedConversationIds.includes(conversationId)) {
+        setSelectedConversationIds([conversationId]);
+      }
+      setLastSelectedConversationId(conversationId);
+      setSessionContextMenu({ x: event.clientX, y: event.clientY, conversationId });
+    },
+    [selectedConversationIds]
+  );
+
+  const exportSelectedSessions = useCallback(() => {
+    closeSessionContextMenu();
+  }, [closeSessionContextMenu]);
+
+  useEffect(() => {
+    if (!sessionContextMenuState) return;
+
+    const closeOnKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSessionContextMenu();
+      }
+    };
+    const closeOnPointerDown = () => closeSessionContextMenu();
+
+    window.addEventListener("keydown", closeOnKeyDown);
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    return () => {
+      window.removeEventListener("keydown", closeOnKeyDown);
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+    };
+  }, [sessionContextMenuState, closeSessionContextMenu]);
 
   const selectedExport = exports.find((item) => item.id === selectedExportId) ?? null;
   const selectedImage = library.find((item) => item.fileId === selectedImageId) ?? library[0] ?? null;
@@ -590,7 +682,9 @@ function App() {
         setLibraryFilter={setLibraryFilter}
         conversations={conversations}
         selectedConversationId={selectedConversationId}
-        setSelectedConversationId={setSelectedConversationId}
+        selectedConversationIds={selectedConversationIds}
+        onSelectConversationRow={selectConversationRow}
+        onOpenSessionContextMenu={openSessionContextMenu}
         library={library}
         selectedImageId={selectedImageId}
         setSelectedImageId={setSelectedImageId}
@@ -649,6 +743,13 @@ function App() {
         />
       )}
 
+      <SessionContextMenu
+        menu={sessionContextMenu}
+        count={selectedConversationIds.length || (sessionContextMenu ? 1 : 0)}
+        onExport={exportSelectedSessions}
+        onClose={closeSessionContextMenu}
+      />
+
       {lightboxOpen && selectedImage && (
         <ImageLightbox
           exportId={selectedExportId}
@@ -659,6 +760,29 @@ function App() {
           onMove={moveLightbox}
         />
       )}
+    </div>
+  );
+}
+
+function SessionContextMenu({ menu, count, onExport, onClose }) {
+  if (!menu) return null;
+  const label = count === 1 ? "Export this session" : `Export ${count} selected sessions`;
+
+  return (
+    <div
+      className="session-context-menu"
+      role="menu"
+      style={{ left: menu.x, top: menu.y }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button type="button" role="menuitem" onClick={onExport}>
+        <FileDown size={15} />
+        <span>{label}</span>
+      </button>
+      <button type="button" className="session-context-menu-close" role="menuitem" aria-label="Close session context menu" onClick={onClose}>
+        <X size={15} />
+      </button>
     </div>
   );
 }
@@ -693,7 +817,9 @@ function Sidebar({
   setLibraryFilter,
   conversations,
   selectedConversationId,
-  setSelectedConversationId,
+  selectedConversationIds,
+  onSelectConversationRow,
+  onOpenSessionContextMenu: handleSessionContextPopup,
   library,
   selectedImageId,
   setSelectedImageId,
@@ -850,21 +976,29 @@ function Sidebar({
         <div className="conversation-list" ref={virtualConversations.containerRef}>
           <VirtualSpacer size={virtualConversations.beforeSize} />
           {virtualConversations.items.map(({ item }) => (
-            <button
-              className={`conversation-row ${item.id === selectedConversationId ? "selected" : ""}`}
-              key={item.id}
-              onClick={() => setSelectedConversationId(item.id)}
-            >
-              <span className="star-wrap">{item.starred ? <Star className="starred" size={16} fill="currentColor" /> : <MessageSquare size={15} />}</span>
-              <span className="conversation-copy">
-                <strong>{item.title}</strong>
-                <span>
-                  {item.messageCount} messages
-                  {item.attachmentCount ? ` · ${item.attachmentCount} files` : ""}
-                </span>
-              </span>
-              <time>{formatShortDate(item.updatedAt)}</time>
-            </button>
+            (() => {
+              const isSelected = item.id === selectedConversationId;
+              const isMultiSelected = selectedConversationIds.includes(item.id);
+              return (
+                <button
+                  className={`conversation-row ${isSelected ? "selected" : ""} ${isMultiSelected ? "multi-selected" : ""}`}
+                  key={item.id}
+                  aria-selected={isMultiSelected}
+                  onClick={(event) => onSelectConversationRow(event, item.id)}
+                  onContextMenu={(event) => handleSessionContextPopup(event, item.id)}
+                >
+                  <span className="star-wrap">{item.starred ? <Star className="starred" size={16} fill="currentColor" /> : <MessageSquare size={15} />}</span>
+                  <span className="conversation-copy">
+                    <strong>{item.title}</strong>
+                    <span>
+                      {item.messageCount} messages
+                      {item.attachmentCount ? ` · ${item.attachmentCount} files` : ""}
+                    </span>
+                  </span>
+                  <time>{formatShortDate(item.updatedAt)}</time>
+                </button>
+              );
+            })()
           ))}
           <VirtualSpacer size={virtualConversations.afterSize} />
           {conversationPage?.nextCursor && (
