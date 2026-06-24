@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -40,8 +40,9 @@ import {
   updateSettings
 } from "./data/apiClient.js";
 import { formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel, truncate } from "./data/formatters.js";
-import { computeMeasuredVirtualRange, copyMessageText as copyMessageTextToClipboard } from "./chatReaderHelpers.js";
+import { copyMessageText as copyMessageTextToClipboard } from "./chatReaderHelpers.js";
 import { getAdjacentIndex, getWheelDirection } from "./libraryNavigation.js";
+import { useMeasuredVirtualList, useScrollViewport } from "./measuredVirtualList.js";
 import { computeVirtualRange } from "./virtualWindow.js";
 import "./styles.css";
 
@@ -85,66 +86,6 @@ function readSavedLayout() {
   }
 }
 
-function useScrollViewport(resetKey) {
-  const containerRef = useRef(null);
-  const [viewport, setViewport] = useState({ scrollOffset: 0, viewportSize: 1, width: 1 });
-
-  const updateViewport = useCallback(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const nextViewport = {
-      scrollOffset: node.scrollTop,
-      viewportSize: node.clientHeight || 1,
-      width: node.clientWidth || 1
-    };
-    setViewport((current) =>
-      current.scrollOffset === nextViewport.scrollOffset &&
-      current.viewportSize === nextViewport.viewportSize &&
-      current.width === nextViewport.width
-        ? current
-        : nextViewport
-    );
-  }, []);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    let frame = 0;
-    const scheduleUpdate = () => {
-      if (frame) return;
-      const run = () => {
-        frame = 0;
-        updateViewport();
-      };
-      frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(run) : window.setTimeout(run, 0);
-    };
-    const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(scheduleUpdate) : null;
-
-    updateViewport();
-    node.addEventListener("scroll", scheduleUpdate, { passive: true });
-    resizeObserver?.observe(node);
-    window.addEventListener("resize", scheduleUpdate);
-
-    return () => {
-      node.removeEventListener("scroll", scheduleUpdate);
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleUpdate);
-      if (frame) {
-        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
-        else window.clearTimeout(frame);
-      }
-    };
-  }, [updateViewport]);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (node) node.scrollTop = 0;
-    updateViewport();
-  }, [resetKey, updateViewport]);
-
-  return { containerRef, viewport };
-}
-
 function useVirtualList(items, { itemSize, overscan = 8, resetKey = "" }) {
   const { containerRef, viewport } = useScrollViewport(resetKey);
   const range = computeVirtualRange({
@@ -160,132 +101,6 @@ function useVirtualList(items, { itemSize, overscan = 8, resetKey = "" }) {
     beforeSize: range.beforeSize,
     afterSize: range.afterSize,
     items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset }))
-  };
-}
-
-function useMeasuredVirtualList(items, { estimatedItemSize, overscan = 8, resetKey = "", getItemKey = (_, index) => index }) {
-  const { containerRef, viewport } = useScrollViewport(resetKey);
-  const [measuredHeights, setMeasuredHeights] = useState({});
-  const measuredHeightsRef = useRef({});
-  const observerEntriesRef = useRef(new Map());
-  const itemRefCallbacksRef = useRef(new Map());
-  const frameRef = useRef(0);
-
-  const syncMeasuredHeights = useCallback(() => {
-    if (frameRef.current) return;
-    const schedule =
-      typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
-        ? window.requestAnimationFrame.bind(window)
-        : (callback) => window.setTimeout(callback, 0);
-
-    frameRef.current = schedule(() => {
-      frameRef.current = 0;
-      const nextHeights = measuredHeightsRef.current;
-      setMeasuredHeights((current) => {
-        const currentKeys = Object.keys(current);
-        const nextKeys = Object.keys(nextHeights);
-        if (
-          currentKeys.length === nextKeys.length &&
-          nextKeys.every((key) => current[key] === nextHeights[key])
-        ) {
-          return current;
-        }
-        return nextHeights;
-      });
-    });
-  }, []);
-
-  const disconnectMeasuredNode = useCallback((key) => {
-    const entry = observerEntriesRef.current.get(key);
-    if (!entry) return;
-    entry.observer?.disconnect();
-    observerEntriesRef.current.delete(key);
-  }, []);
-
-  const rememberMeasuredHeight = useCallback(
-    (key, height) => {
-      const nextHeight = Math.max(1, Math.ceil(Number(height) || 0));
-      if (!Number.isFinite(nextHeight) || measuredHeightsRef.current[key] === nextHeight) return;
-      measuredHeightsRef.current = { ...measuredHeightsRef.current, [key]: nextHeight };
-      syncMeasuredHeights();
-    },
-    [syncMeasuredHeights]
-  );
-
-  const bindMeasuredNode = useCallback(
-    (key, node) => {
-      const currentEntry = observerEntriesRef.current.get(key);
-      if (currentEntry?.node === node) return;
-      disconnectMeasuredNode(key);
-      if (!node) return;
-
-      const measureNode = () => rememberMeasuredHeight(key, node.getBoundingClientRect().height);
-      let observer = null;
-      if (typeof ResizeObserver === "function") {
-        observer = new ResizeObserver((entries) => {
-          const nextHeight = entries[0]?.contentRect?.height ?? node.getBoundingClientRect().height;
-          rememberMeasuredHeight(key, nextHeight);
-        });
-        observer.observe(node);
-      }
-
-      observerEntriesRef.current.set(key, { node, observer });
-      measureNode();
-    },
-    [disconnectMeasuredNode, rememberMeasuredHeight]
-  );
-
-  const measureItem = useCallback(
-    (key) => {
-      if (!itemRefCallbacksRef.current.has(key)) {
-        itemRefCallbacksRef.current.set(key, (node) => bindMeasuredNode(key, node));
-      }
-      return itemRefCallbacksRef.current.get(key);
-    },
-    [bindMeasuredNode]
-  );
-
-  useEffect(() => {
-    for (const key of observerEntriesRef.current.keys()) disconnectMeasuredNode(key);
-    itemRefCallbacksRef.current.clear();
-    measuredHeightsRef.current = {};
-    setMeasuredHeights({});
-  }, [disconnectMeasuredNode, resetKey]);
-
-  useEffect(
-    () => () => {
-      for (const key of observerEntriesRef.current.keys()) disconnectMeasuredNode(key);
-      if (frameRef.current) {
-        if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
-          window.cancelAnimationFrame(frameRef.current);
-        } else if (typeof window !== "undefined") {
-          window.clearTimeout(frameRef.current);
-        }
-      }
-    },
-    [disconnectMeasuredNode]
-  );
-
-  const itemKeys = useMemo(() => items.map((item, index) => String(getItemKey(item, index))), [getItemKey, items]);
-  const range = useMemo(
-    () =>
-      computeMeasuredVirtualRange({
-        itemKeys,
-        measuredHeights,
-        estimatedItemSize,
-        scrollOffset: viewport.scrollOffset,
-        viewportSize: viewport.viewportSize,
-        overscan
-      }),
-    [estimatedItemSize, itemKeys, measuredHeights, overscan, viewport.scrollOffset, viewport.viewportSize]
-  );
-
-  return {
-    containerRef,
-    beforeSize: range.beforeSize,
-    afterSize: range.afterSize,
-    items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset })),
-    measureItem
   };
 }
 
