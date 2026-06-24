@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
+use gpt_export_manager_lib::models::SaveSessionsProgress;
 use gpt_export_manager_lib::state::AppState;
 use serde_json::json;
 use tempfile::TempDir;
@@ -206,6 +208,110 @@ fn commands_malformed_export_json_surfaces_parse_failed() {
         )
         .unwrap_err();
     assert_eq!(error.code(), "parse_failed");
+}
+
+#[test]
+fn commands_save_single_session_writes_original_json_under_app_data() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let response = state
+        .save_sessions_response(Some(export_id.clone()), vec!["conv-1".to_string()], |_| {})
+        .unwrap();
+
+    assert_eq!(response.items.len(), 1);
+    let item = &response.items[0];
+    assert_eq!(item.conversation_id, "conv-1");
+    assert_eq!(item.format, "original");
+    assert!(response.destination_dir.ends_with(&export_id));
+    assert!(item.path.starts_with(&response.destination_dir));
+    assert_eq!(response.progress.completed, 1);
+    assert_eq!(response.progress.total, 1);
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&item.path).unwrap()).unwrap();
+    assert_eq!(saved["id"], "conv-1");
+    assert!(saved.get("mapping").is_some());
+    assert!(saved.get("messages").is_none());
+}
+
+#[test]
+fn commands_save_multiple_sessions_writes_each_file_and_reports_progress() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+    let captured = Arc::new(Mutex::new(Vec::<SaveSessionsProgress>::new()));
+    let progress = Arc::clone(&captured);
+
+    let response = state
+        .save_sessions_response(
+            Some(export_id),
+            vec!["conv-1".to_string(), "conv-2".to_string()],
+            move |item| progress.lock().unwrap().push(item.clone()),
+        )
+        .unwrap();
+
+    assert_eq!(response.items.len(), 2);
+    assert!(response.items.iter().all(|item| item.path.exists()));
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].completed, 1);
+    assert_eq!(captured[0].total, 2);
+    assert_eq!(captured[1].completed, 2);
+    assert_eq!(captured[1].total, 2);
+}
+
+#[test]
+fn commands_save_sessions_rejects_missing_session_before_writing() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let error = state
+        .save_sessions_response(Some(export_id), vec!["missing".to_string()], |_| {})
+        .unwrap_err();
+
+    assert_eq!(error.code(), "conversation_not_found");
+    assert!(!fixture.app_data.path().join("Saved Sessions").exists());
+}
+
+#[test]
+fn commands_saved_sessions_dir_for_export_returns_app_data_folder() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let dir = state
+        .saved_sessions_dir_for_export(Some(export_id.clone()))
+        .unwrap();
+
+    assert_eq!(
+        dir,
+        fixture
+            .app_data
+            .path()
+            .join("Saved Sessions")
+            .join(export_id)
+    );
+    assert!(dir.exists());
 }
 
 struct Fixture {

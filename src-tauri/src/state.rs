@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{export_fingerprint, read_json, write_json_atomic, ExportFingerprint};
 use crate::conversations::{
-    load::load_conversation, summary_index::build_conversation_summary_index,
+    load::load_conversation, save::save_original_sessions,
+    summary_index::build_conversation_summary_index,
 };
 use crate::errors::{io_error, AppError, AppResult};
 use crate::exports::scan_exports;
@@ -14,8 +15,8 @@ use crate::library::{assets::resolve_asset, index::build_library_index};
 use crate::models::{
     CacheStatus, Conversation, ConversationIndex, ConversationStats, ConversationSummary,
     ExportItem, ExportsResponse, LibraryIndex, LibraryResponseItem, LibraryStats, PagedResponse,
-    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, SettingsResponse,
-    StatsResponse, UpdateSettingsResponse,
+    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, SaveSessionsProgress,
+    SaveSessionsResponse, SettingsResponse, StatsResponse, UpdateSettingsResponse,
 };
 use crate::paging::page_items;
 use crate::settings::{
@@ -31,6 +32,7 @@ pub struct AppState {
 struct StateInner {
     source_root: Option<PathBuf>,
     cache_dir: PathBuf,
+    saved_sessions_dir: PathBuf,
     settings_file: PathBuf,
     exports: Vec<ExportItem>,
     indexes: HashMap<String, IndexedExport>,
@@ -73,6 +75,7 @@ impl AppState {
         std::fs::create_dir_all(app_data_dir).map_err(|error| io_error(app_data_dir, error))?;
         let cache_dir = app_data_dir.join("cache");
         std::fs::create_dir_all(&cache_dir).map_err(|error| io_error(&cache_dir, error))?;
+        let saved_sessions_dir = app_data_dir.join("Saved Sessions");
         let settings_file = app_data_dir.join("settings.json");
         let settings = read_runtime_settings(&settings_file)?;
         let source_root = choose_source_root(settings.source_root, default_source_root);
@@ -85,6 +88,7 @@ impl AppState {
             inner: Arc::new(Mutex::new(StateInner {
                 source_root,
                 cache_dir,
+                saved_sessions_dir,
                 settings_file,
                 exports,
                 indexes: HashMap::new(),
@@ -243,6 +247,49 @@ impl AppState {
             });
         }
         Ok(RefreshIndexResponse { indexed })
+    }
+
+    pub fn save_sessions_response(
+        &self,
+        export_id: Option<String>,
+        conversation_ids: Vec<String>,
+        mut on_progress: impl FnMut(SaveSessionsProgress),
+    ) -> AppResult<SaveSessionsResponse> {
+        let inner = self.lock()?;
+        let export = requested_export(&inner, export_id)?;
+        let public_export = PublicExport::from(&export);
+        let destination_dir = inner.saved_sessions_dir.join(&export.id);
+        drop(inner);
+
+        let mut progress = SaveSessionsProgress {
+            export_id: public_export.id.clone(),
+            total: conversation_ids.len(),
+            completed: 0,
+            current_conversation_id: None,
+            current_title: None,
+        };
+        let items = save_original_sessions(&export, &destination_dir, &conversation_ids, |item| {
+            progress = item.clone();
+            on_progress(item);
+        })?;
+
+        Ok(SaveSessionsResponse {
+            export: public_export,
+            destination_dir,
+            items,
+            progress,
+        })
+    }
+
+    pub fn saved_sessions_dir_for_export(&self, export_id: Option<String>) -> AppResult<PathBuf> {
+        let inner = self.lock()?;
+        let export = requested_export(&inner, export_id)?;
+        let destination_dir = inner.saved_sessions_dir.join(&export.id);
+        drop(inner);
+
+        std::fs::create_dir_all(&destination_dir)
+            .map_err(|error| io_error(&destination_dir, error))?;
+        Ok(destination_dir)
     }
 
     pub fn read_asset_payload(&self, export_id: &str, file_id: &str) -> AppResult<AssetPayload> {

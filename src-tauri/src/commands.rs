@@ -1,10 +1,12 @@
-use tauri::State;
+use std::path::Path;
 
-use crate::errors::AppResult;
+use tauri::{AppHandle, Emitter, State};
+
+use crate::errors::{io_error, AppResult};
 use crate::models::{
     Conversation, ConversationStats, ConversationSummary, ExportsResponse, LibraryResponseItem,
-    LibraryStats, PagedResponse, RefreshIndexResponse, SettingsResponse, StatsResponse,
-    UpdateSettingsResponse,
+    LibraryStats, OpenFolderResponse, PagedResponse, RefreshIndexResponse, SaveSessionsResponse,
+    SettingsResponse, StatsResponse, UpdateSettingsResponse,
 };
 use crate::state::AppState;
 
@@ -75,4 +77,53 @@ pub fn refresh_index(
     export_id: Option<String>,
 ) -> AppResult<RefreshIndexResponse> {
     state.refresh_index_response(export_id)
+}
+
+#[tauri::command]
+pub fn save_sessions(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    export_id: Option<String>,
+    conversation_ids: Vec<String>,
+) -> AppResult<SaveSessionsResponse> {
+    state.save_sessions_response(export_id, conversation_ids, |progress| {
+        let _ = app.emit("session-export-progress", progress);
+    })
+}
+
+#[tauri::command]
+pub fn open_saved_sessions_folder(
+    state: State<'_, AppState>,
+    export_id: Option<String>,
+) -> AppResult<OpenFolderResponse> {
+    let path = state.saved_sessions_dir_for_export(export_id)?;
+    open_folder(&path)?;
+    Ok(OpenFolderResponse { path })
+}
+
+#[cfg(windows)]
+fn open_folder(path: &Path) -> AppResult<()> {
+    std::process::Command::new("explorer")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| io_error(path, error))
+}
+
+#[cfg(target_os = "macos")]
+fn open_folder(path: &Path) -> AppResult<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| io_error(path, error))
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn open_folder(path: &Path) -> AppResult<()> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| io_error(path, error))
 }

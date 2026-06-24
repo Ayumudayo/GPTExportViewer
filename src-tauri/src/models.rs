@@ -272,3 +272,37 @@ pub struct RefreshIndexItem {
 pub struct RefreshIndexResponse {
     pub indexed: Vec<RefreshIndexItem>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSessionItem {
+    pub conversation_id: String,
+    pub title: String,
+    pub path: PathBuf,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSessionsProgress {
+    pub export_id: String,
+    pub total: usize,
+    pub completed: usize,
+    pub current_conversation_id: Option<String>,
+    pub current_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSessionsResponse {
+    pub export: PublicExport,
+    pub destination_dir: PathBuf,
+    pub items: Vec<SavedSessionItem>,
+    pub progress: SaveSessionsProgress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFolderResponse {
+    pub path: PathBuf,
+}

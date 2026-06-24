@@ -42,7 +42,9 @@ pub fn run() {
             commands::get_conversations,
             commands::get_library,
             commands::get_conversation,
-            commands::refresh_index
+            commands::refresh_index,
+            commands::save_sessions,
+            commands::open_saved_sessions_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTExportManager");
