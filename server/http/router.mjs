@@ -32,13 +32,13 @@ export function createRouter(state) {
       }
       if (request.method === "PATCH" && url.pathname === "/api/settings") {
         const body = await readJsonBody(request);
-        const sourceRoot = await resolveSourceRoot(body.sourceRoot);
-        const exports = await scanExports(sourceRoot);
-        state.root = sourceRoot;
-        state.exports = exports;
+        const nextRoot = await resolveSourceRoot(body.sourceRoot);
+        const nextExports = await scanExports(nextRoot);
+        await writeRuntimeSettings(state.cacheDir, { sourceRoot: nextRoot });
+        state.root = nextRoot;
+        state.exports = nextExports;
         state.indexes.clear();
         state.indexJobs.clear();
-        await writeRuntimeSettings(state.cacheDir, { sourceRoot });
         return sendJson(response, 200, { settings: publicSettings(state), exports: state.exports.map(publicExport) }, cors.headers);
       }
       if (request.method === "POST" && url.pathname === "/api/pick-folder") {
@@ -255,7 +255,9 @@ async function readJsonBody(request) {
   }
   if (!chunks.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid JSON body");
+    return body;
   } catch {
     throw new Error("Invalid JSON body");
   }

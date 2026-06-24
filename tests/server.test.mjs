@@ -106,6 +106,27 @@ try {
     assert.equal(settingsPayload.settings.cacheDir, path.resolve(fixture.cacheDir));
     assert.equal(settingsPayload.settings.exportCount, 2);
 
+    const nullSettingsBodyResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: "null"
+    });
+    assert.equal(nullSettingsBodyResponse.status, 400);
+
+    const nullSessionExportBodyResponse = await fetch(`${baseUrl}/api/sessions/export`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "null"
+    });
+    assert.equal(nullSessionExportBodyResponse.status, 400);
+
+    const arrayPickFolderBodyResponse = await fetch(`${baseUrl}/api/pick-folder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "[]"
+    });
+    assert.equal(arrayPickFolderBodyResponse.status, 400);
+
     const pickFolderResponse = await fetch(`${baseUrl}/api/pick-folder`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -230,6 +251,21 @@ try {
     });
     assert.equal(invalidSettingsResponse.status, 400);
     assert.equal((await fetch(`${baseUrl}/api/exports`).then((response) => response.json())).exports.length, 2);
+
+    const previousRoot = server.appState.root;
+    const previousExportIds = server.appState.exports.map((item) => item.id);
+    const previousIndexIds = [...server.appState.indexes.keys()];
+    server.appState.cacheDir = cacheFile;
+    const failedPersistenceResponse = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceRoot: fixture.partial })
+    });
+    assert.equal(failedPersistenceResponse.status, 500);
+    assert.equal(server.appState.root, previousRoot);
+    assert.deepEqual(server.appState.exports.map((item) => item.id), previousExportIds);
+    assert.deepEqual([...server.appState.indexes.keys()], previousIndexIds);
+    server.appState.cacheDir = fixture.cacheDir;
 
     const patchSettingsResponse = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
