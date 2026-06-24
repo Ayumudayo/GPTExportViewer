@@ -79,6 +79,8 @@ assert.equal(main.includes("sessionExportJob"), true, "Session export should tra
 assert.equal(main.includes("ExportProgressDialog"), true, "Session export should show a progress dialog");
 assert.equal(main.includes("saveSessions"), true, "UI should call the session export API");
 assert.equal(main.includes("openSavedSessionsFolder"), true, "Completed export dialog should expose folder opening");
+assert.equal(main.includes('sessionExportJob?.status === "running"'), true, "Session export actions should guard against re-entry while running");
+assert.equal(main.includes('className="export-progress-backdrop"'), true, "Export progress should render a dedicated backdrop wrapper");
 assert.equal(main.includes("reconcileConversationSelection"), true, "Session export selection should be reconciled against the loaded conversation list");
 assert.equal(main.includes("aria-pressed={isExportSelected}"), true, "Session rows should expose export-selection state as pressed buttons");
 assert.equal(main.includes('aria-current={isActive ? "true" : undefined}'), true, "Session rows should expose the active chat separately from export selection");
@@ -163,6 +165,8 @@ assert.match(styles, /\.conversation-row\.multi-selected\s*\{/, "Multi-selected 
 assert.match(styles, /\.conversation-row\.selected\s*\{[\s\S]*?box-shadow: inset 3px 0 0 var\(--muted-2\);[\s\S]*?\}/, "Active-only session rows should use a neutral active marker, not the export-selection marker");
 assert.match(styles, /\.conversation-row\.multi-selected\s*\{[\s\S]*?box-shadow: inset 3px 0 0 var\(--green\);[\s\S]*?\}/, "Export-selected session rows should use the export-selection marker");
 assert.match(styles, /\.session-context-menu\s*\{/, "Session context menu should have fixed popup styling");
+assert.match(styles, /body\.modal-open\s*\{[\s\S]*?overflow: hidden;[\s\S]*?\}/, "Modal-open body state should lock scrolling");
+assert.match(styles, /\.export-progress-backdrop\s*\{[\s\S]*?z-index:\s*80;[\s\S]*?\}/, "Export progress backdrop should sit above the session context menu");
 assert.match(styles, /\.export-progress-dialog\s*\{/, "Export progress dialog should use app modal styling");
 assert.match(styles, /\.progress-bar\s*\{/, "Export progress dialog should show progress visually");
 

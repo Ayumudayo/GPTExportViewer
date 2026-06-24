@@ -517,8 +517,11 @@ function App() {
     setSessionContextMenu(null);
   }, []);
 
+  const isSessionExportRunning = sessionExportJob?.status === "running";
+
   const selectConversationRow = useCallback(
     (event, conversationId) => {
+      if (isSessionExportRunning) return;
       setSelectedConversationId(conversationId);
       closeSessionContextMenu();
 
@@ -535,6 +538,7 @@ function App() {
     },
     [
       conversations,
+      isSessionExportRunning,
       lastSelectedConversationId,
       selectedConversationId,
       closeSessionContextMenu
@@ -543,6 +547,10 @@ function App() {
 
   const openSessionContextMenu = useCallback(
     (event, conversationId) => {
+      if (isSessionExportRunning) {
+        event.preventDefault();
+        return;
+      }
       event.preventDefault();
       setSelectedConversationId(conversationId);
       if (!selectedConversationIds.includes(conversationId)) {
@@ -551,10 +559,11 @@ function App() {
       setLastSelectedConversationId(conversationId);
       setSessionContextMenu({ x: event.clientX, y: event.clientY, conversationId });
     },
-    [selectedConversationIds]
+    [isSessionExportRunning, selectedConversationIds]
   );
 
   const exportSelectedSessions = useCallback(async () => {
+    if (sessionExportJob?.status === "running") return;
     closeSessionContextMenu();
     const conversationIds = selectedConversationIds.length
       ? selectedConversationIds
@@ -615,7 +624,13 @@ function App() {
       }));
       setError(message);
     }
-  }, [selectedConversationId, selectedConversationIds, selectedExportId, closeSessionContextMenu]);
+  }, [selectedConversationId, selectedConversationIds, selectedExportId, sessionExportJob?.status, closeSessionContextMenu]);
+
+  useEffect(() => {
+    if (isSessionExportRunning) {
+      setSessionContextMenu(null);
+    }
+  }, [isSessionExportRunning]);
 
   const closeExportProgressDialog = useCallback(() => {
     setSessionExportJob((current) => (current?.status === "running" ? current : null));
@@ -938,8 +953,14 @@ function ExportProgressDialog({ job, onOpenFolder, onClose }) {
   const title = job.status === "done" ? "Export complete" : job.status === "error" ? "Export failed" : "Exporting sessions...";
 
   return (
-    <div className="settings-backdrop" role="presentation">
-      <section className="export-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="export-progress-title">
+    <div className="export-progress-backdrop" role="presentation" onPointerDown={(event) => event.stopPropagation()}>
+      <section
+        className="export-progress-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-progress-title"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
         <header>
           <div>
             <FileDown size={18} />
