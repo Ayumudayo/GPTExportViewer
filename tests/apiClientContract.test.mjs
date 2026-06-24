@@ -37,6 +37,7 @@ assert.equal(tauriClient.includes("canceled: true"), true, "Tauri folder picker 
 assert.match(tauriClient, /page:\s*payload\.page/, "Tauri paged responses should preserve the page envelope");
 
 const { createTauriApiClient } = await import("../src/data/tauriApiClient.js");
+const { saveSessions: saveHttpSessions, openSavedSessionsFolder: openHttpSavedSessionsFolder } = await import("../src/data/httpApiClient.js");
 const calls = [];
 const events = [];
 const client = createTauriApiClient({
@@ -95,5 +96,88 @@ assert.deepEqual(events, ["session-export-progress", "unlisten"]);
 assert.deepEqual(progressPayloads, [{ exportId: "exp", total: 1, completed: 1 }]);
 await client.openSavedSessionsFolder({ exportId: "exp" });
 assert.equal(calls.some((call) => call.command === "open_saved_sessions_folder"), true);
+
+const fallbackProgress = [];
+const fallbackClient = createTauriApiClient({
+  invoke: async () => ({ progress: { exportId: "exp", total: 1, completed: 1 } }),
+  listenEvent: async () => () => {}
+});
+assert.deepEqual(await fallbackClient.saveSessions({ exportId: "exp", conversationIds: ["c1"], onProgress: (progress) => fallbackProgress.push(progress) }), {
+  progress: { exportId: "exp", total: 1, completed: 1 }
+});
+assert.deepEqual(fallbackProgress, [{ exportId: "exp", total: 1, completed: 1 }]);
+
+const filteredProgress = [];
+const filteredClient = createTauriApiClient({
+  invoke: async () => ({ progress: { exportId: "exp", total: 2, completed: 2 } }),
+  listenEvent: async (_eventName, handler) => {
+    handler({ payload: { exportId: "other", total: 2, completed: 1 } });
+    handler({ payload: { exportId: "exp", total: 2, completed: 2 } });
+    return () => {};
+  }
+});
+await filteredClient.saveSessions({ exportId: "exp", conversationIds: ["c1", "c2"], onProgress: (progress) => filteredProgress.push(progress) });
+assert.deepEqual(filteredProgress, [{ exportId: "exp", total: 2, completed: 2 }]);
+
+const cleanupResult = { progress: { exportId: "exp", total: 1, completed: 1 } };
+const cleanupSuccessClient = createTauriApiClient({
+  invoke: async () => cleanupResult,
+  listenEvent: async () => async () => {
+    throw new Error("cleanup failed");
+  }
+});
+assert.equal(await cleanupSuccessClient.saveSessions({ exportId: "exp", conversationIds: ["c1"], onProgress: () => {} }), cleanupResult);
+
+const invokeError = new Error("invoke failed");
+const cleanupFailureClient = createTauriApiClient({
+  invoke: async () => {
+    throw invokeError;
+  },
+  listenEvent: async () => async () => {
+    throw new Error("cleanup failed");
+  }
+});
+await assert.rejects(
+  cleanupFailureClient.saveSessions({ exportId: "exp", conversationIds: ["c1"], onProgress: () => {} }),
+  (error) => {
+    assert.equal(error, invokeError);
+    return true;
+  }
+);
+
+const originalFetch = globalThis.fetch;
+const fetchCalls = [];
+globalThis.fetch = async (url, options) => {
+  fetchCalls.push({ url, options });
+  return {
+    ok: true,
+    json: async () => {
+      if (url.endsWith("/api/sessions/export")) {
+        return { progress: { exportId: "exp", total: 2, completed: 2 } };
+      }
+      return { opened: true };
+    }
+  };
+};
+try {
+  const httpProgress = [];
+  assert.deepEqual(await saveHttpSessions({ exportId: "exp", conversationIds: ["c1", "c2"], onProgress: (progress) => httpProgress.push(progress) }), {
+    progress: { exportId: "exp", total: 2, completed: 2 }
+  });
+  assert.equal(fetchCalls[0].url, "http://127.0.0.1:43117/api/sessions/export");
+  assert.equal(fetchCalls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(fetchCalls[0].options.body), { exportId: "exp", conversationIds: ["c1", "c2"] });
+  assert.deepEqual(httpProgress, [
+    { exportId: "exp", total: 2, completed: 0 },
+    { exportId: "exp", total: 2, completed: 2 }
+  ]);
+
+  assert.deepEqual(await openHttpSavedSessionsFolder({ exportId: "exp" }), { opened: true });
+  assert.equal(fetchCalls[1].url, "http://127.0.0.1:43117/api/sessions/open-folder");
+  assert.equal(fetchCalls[1].options.method, "POST");
+  assert.deepEqual(JSON.parse(fetchCalls[1].options.body), { exportId: "exp" });
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 console.log("api client contract tests passed");

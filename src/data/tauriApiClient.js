@@ -59,16 +59,31 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
 
     async saveSessions({ exportId, conversationIds, onProgress }) {
       let unlisten;
+      let lastProgress;
       if (onProgress) {
         unlisten = await listenEvent(SESSION_EXPORT_PROGRESS_EVENT, (event) => {
-          onProgress(event.payload);
+          const progress = event.payload;
+          if (progress?.exportId !== exportId) {
+            return;
+          }
+          lastProgress = progress;
+          onProgress(progress);
         });
       }
       try {
-        return await invoke(COMMANDS.saveSessions, { exportId, conversationIds });
+        const result = await invoke(COMMANDS.saveSessions, { exportId, conversationIds });
+        if (onProgress && result?.progress && !sameProgress(result.progress, lastProgress)) {
+          lastProgress = result.progress;
+          onProgress(result.progress);
+        }
+        return result;
       } finally {
         if (unlisten) {
-          await unlisten();
+          try {
+            await unlisten();
+          } catch {
+            // Cleanup errors must not replace the invoke result or error.
+          }
         }
       }
     },
@@ -144,6 +159,10 @@ function paginationArgs(cursor, limit) {
 function numericArg(value, fallback) {
   const number = Number.parseInt(value, 10);
   return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function sameProgress(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function defaultClient() {
