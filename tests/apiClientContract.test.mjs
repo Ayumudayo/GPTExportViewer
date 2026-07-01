@@ -2,17 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const apiClient = await readFile("src/data/apiClient.js", "utf8");
-const httpClient = await readFile("src/data/httpApiClient.js", "utf8");
 const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
 
-assert.equal(apiClient.includes("selectClient"), true, "Public API client should select the active transport");
-assert.equal(apiClient.includes("isTauriRuntime"), true, "Public API client should detect the Tauri runtime");
+assert.equal(apiClient.includes("./tauriApiClient.js"), true, "Public API client should use the Tauri transport directly");
+assert.equal(apiClient.includes("httpApiClient"), false, "Public API client should not import the removed HTTP transport");
 assert.equal(apiClient.includes("saveSessions"), true, "Public API client should expose saveSessions");
 assert.equal(apiClient.includes("openSavedSessionsFolder"), true, "Public API client should expose openSavedSessionsFolder");
-assert.equal(httpClient.includes("/api/pick-folder"), true, "HTTP transport should retain the existing native picker endpoint");
-assert.equal(httpClient.includes("/api/sessions/export"), true, "HTTP transport should expose the session export endpoint");
-assert.equal(httpClient.includes("/api/sessions/open-folder"), true, "HTTP transport should expose the saved sessions folder endpoint");
-assert.equal(httpClient.includes("local API server is running an older build"), true, "HTTP transport should keep restart guidance");
 
 for (const command of [
   "get_exports",
@@ -37,7 +32,6 @@ assert.equal(tauriClient.includes("canceled: true"), true, "Tauri folder picker 
 assert.match(tauriClient, /page:\s*payload\.page/, "Tauri paged responses should preserve the page envelope");
 
 const { createTauriApiClient } = await import("../src/data/tauriApiClient.js");
-const { saveSessions: saveHttpSessions, openSavedSessionsFolder: openHttpSavedSessionsFolder } = await import("../src/data/httpApiClient.js");
 const calls = [];
 const events = [];
 const client = createTauriApiClient({
@@ -144,40 +138,5 @@ await assert.rejects(
     return true;
   }
 );
-
-const originalFetch = globalThis.fetch;
-const fetchCalls = [];
-globalThis.fetch = async (url, options) => {
-  fetchCalls.push({ url, options });
-  return {
-    ok: true,
-    json: async () => {
-      if (url.endsWith("/api/sessions/export")) {
-        return { progress: { exportId: "exp", total: 2, completed: 2 } };
-      }
-      return { opened: true };
-    }
-  };
-};
-try {
-  const httpProgress = [];
-  assert.deepEqual(await saveHttpSessions({ exportId: "exp", conversationIds: ["c1", "c2"], onProgress: (progress) => httpProgress.push(progress) }), {
-    progress: { exportId: "exp", total: 2, completed: 2 }
-  });
-  assert.equal(fetchCalls[0].url, "http://127.0.0.1:43117/api/sessions/export");
-  assert.equal(fetchCalls[0].options.method, "POST");
-  assert.deepEqual(JSON.parse(fetchCalls[0].options.body), { exportId: "exp", conversationIds: ["c1", "c2"] });
-  assert.deepEqual(httpProgress, [
-    { exportId: "exp", total: 2, completed: 0 },
-    { exportId: "exp", total: 2, completed: 2 }
-  ]);
-
-  assert.deepEqual(await openHttpSavedSessionsFolder({ exportId: "exp" }), { opened: true });
-  assert.equal(fetchCalls[1].url, "http://127.0.0.1:43117/api/sessions/open-folder");
-  assert.equal(fetchCalls[1].options.method, "POST");
-  assert.deepEqual(JSON.parse(fetchCalls[1].options.body), { exportId: "exp" });
-} finally {
-  globalThis.fetch = originalFetch;
-}
 
 console.log("api client contract tests passed");

@@ -7,9 +7,6 @@
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "build": "vite build",
     "test": "node tests/run-all.mjs",
-    "server": "node server/main.mjs",
-    "index": "node server/main.mjs --index-only",
-    "preview": "vite preview --host 127.0.0.1 --port 4174",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --no-bundle"
   },

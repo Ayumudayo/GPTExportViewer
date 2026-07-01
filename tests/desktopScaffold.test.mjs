@@ -34,11 +34,7 @@ assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe comm
 assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
 
 assert.match(readme, /Tauri\/Rust/, "Desktop docs should name Tauri/Rust as the primary target");
-assert.match(
-  readme,
-  /Node server is .*web-development compatibility/i,
-  "Desktop docs should demote Node server to web-development compatibility"
-);
+assert.equal(readme.includes("Node server"), false, "Desktop docs should not document the removed Node API server");
 assert.match(readme, /110\.0\.1531\.0/, "Desktop docs should document the WebView2 minimum");
 assert.match(readme, /user app data/i, "Desktop docs should say settings and cache live in user app data");
 assert.match(

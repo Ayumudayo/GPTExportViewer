@@ -1,8 +1,8 @@
 # GPTExportViewer
 
-Dark-first local viewer for ChatGPT Data Export folders.
+Dark-first desktop viewer for ChatGPT Data Export folders.
 
-The primary desktop target is Tauri/Rust on Windows 10/11. The React UI is still built with Vite, but export discovery, indexing, settings, cache, and image asset serving run inside the Rust desktop process rather than a local Node API server.
+The app targets Tauri/Rust on Windows 10/11. The React UI is built with Vite, while export discovery, indexing, settings, cache, session export, and image asset serving run inside the Rust desktop process.
 
 ## Desktop
 
@@ -25,26 +25,9 @@ src-tauri/target/release/GPTExportViewer.exe
 
 The desktop runtime requires Microsoft Edge WebView2 `110.0.1531.0` or newer. Settings and cache live in user app data, for example `%LOCALAPPDATA%\GPTExportViewer`, with export indexes under the `cache` subfolder. The desktop app does not use the repo-local `.cache` directory.
 
-## Web Development
+## Development
 
-The Node server is kept for web-development compatibility and browser-only debugging.
-
-```powershell
-npm run server -- --root "E:\OpenAI\Exports"
-npm run dev
-```
-
-Open `http://127.0.0.1:5174`.
-
-The compatibility API listens on `http://127.0.0.1:43117` by default. Only loopback frontend origins are allowed to read API responses unless another local origin is passed with `--allow-origin`.
-
-## Index Only
-
-```powershell
-npm run index -- --root "E:\OpenAI\Exports"
-```
-
-The Node compatibility cache is JSON-based and stored under `.cache`. The desktop cache is also JSON-based but is stored in user app data.
+Use `npm run desktop:dev` for interactive development so the UI talks to the real Tauri command layer. The standalone Vite dev server is only a frontend asset server for Tauri development.
 
 ## Notes
 
