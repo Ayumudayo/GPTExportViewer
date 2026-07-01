@@ -21,7 +21,7 @@ pub fn run() {
         return;
     }
 
-    let app_state = match state::AppState::new("GPTExportViewer", Some(default_source_root())) {
+    let app_state = match state::AppState::new("GPTExportViewer", None) {
         Ok(state) => state,
         Err(error) => {
             show_startup_error(&error.to_string());
@@ -40,6 +40,8 @@ pub fn run() {
             commands::get_exports,
             commands::get_settings,
             commands::update_settings,
+            commands::rescan_exports,
+            commands::update_preferences,
             commands::get_stats,
             commands::get_conversations,
             commands::get_library,
@@ -51,10 +53,6 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTExportViewer");
-}
-
-fn default_source_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(r"E:\OpenAI\Exports")
 }
 
 fn asset_response(state: &state::AppState, uri: String) -> tauri::http::Response<Vec<u8>> {

@@ -9,11 +9,15 @@ assert.equal(apiClient.includes("httpApiClient"), false, "Public API client shou
 assert.equal(apiClient.includes("saveSessions"), true, "Public API client should expose saveSessions");
 assert.equal(apiClient.includes("openSavedSessionsFolder"), true, "Public API client should expose openSavedSessionsFolder");
 assert.equal(apiClient.includes("saveOriginalImage"), true, "Public API client should expose original image saving");
+assert.equal(apiClient.includes("rescanExports"), true, "Public API client should expose source folder rescanning");
+assert.equal(apiClient.includes("updatePreferences"), true, "Public API client should expose lightweight app preference updates");
 
 for (const command of [
   "get_exports",
   "get_settings",
   "update_settings",
+  "rescan_exports",
+  "update_preferences",
   "get_stats",
   "get_conversations",
   "get_conversation",
@@ -104,6 +108,11 @@ assert.deepEqual(await client.saveOriginalImage({ exportId: "exp", fileId: "file
 const imageSaveCall = calls.findLast((call) => call.command === "save_original_image");
 assert.equal(imageSaveCall.args.exportId, "exp");
 assert.equal(imageSaveCall.args.fileId, "file-img-1");
+await client.rescanExports();
+assert.equal(calls.some((call) => call.command === "rescan_exports"), true);
+await client.updatePreferences({ selectedExportId: "exp", windowSize: { width: 1280, height: 840 } });
+const preferenceCall = calls.findLast((call) => call.command === "update_preferences");
+assert.deepEqual(preferenceCall.args, { selectedExportId: "exp", windowSize: { width: 1280, height: 840 } });
 
 const fallbackProgress = [];
 const fallbackClient = createTauriApiClient({

@@ -8,7 +8,9 @@ export {
   fetchStats,
   openSavedSessionsFolder,
   pickSourceFolder,
+  rescanExports,
   saveOriginalImage,
   saveSessions,
+  updatePreferences,
   updateSettings
 } from "./tauriApiClient.js";

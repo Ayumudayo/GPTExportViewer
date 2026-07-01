@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{io_error, AppError, AppResult};
 use crate::fs_guards::resolve_absolute;
+use crate::models::WindowSize;
 
 pub fn resolve_source_root(source_root: &Path) -> AppResult<PathBuf> {
     let resolved = resolve_absolute(source_root);
@@ -37,6 +38,8 @@ pub fn ensure_app_data_dir(app_name: &str) -> AppResult<PathBuf> {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSettings {
     pub source_root: Option<PathBuf>,
+    pub selected_export_id: Option<String>,
+    pub window_size: Option<WindowSize>,
 }
 
 pub fn read_runtime_settings(settings_path: &Path) -> AppResult<RuntimeSettings> {

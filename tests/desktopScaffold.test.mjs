@@ -35,8 +35,12 @@ assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on t
 assert.match(mainRs, /windows_subsystem\s*=\s*"windows"/, "Release desktop exe should use the Windows GUI subsystem");
 assert.match(mainRs, /not\(debug_assertions\)/, "Windows GUI subsystem should be scoped to release builds");
 assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");
+assert.match(libRs, /AppState::new\("GPTExportViewer",\s*None\)/, "First run should start without a hardcoded source folder so onboarding can run");
+assert.equal(libRs.includes("E:\\OpenAI\\Exports"), false, "Desktop startup should not silently default to a developer-local export folder");
 assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe commands");
 assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
+assert.match(libRs, /rescan_exports/, "Rust scaffold should register source folder rescanning");
+assert.match(libRs, /update_preferences/, "Rust scaffold should register selected export and window preference persistence");
 assert.match(libRs, /save_original_image/, "Rust scaffold should register original image saving");
 
 assert.match(readme, /Tauri\/Rust/, "Desktop docs should name Tauri/Rust as the primary target");

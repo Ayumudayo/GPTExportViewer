@@ -219,10 +219,19 @@ impl From<&ExportItem> for PublicExport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicSettings {
     pub source_root: Option<PathBuf>,
     pub cache_dir: PathBuf,
     pub export_count: usize,
+    pub selected_export_id: Option<String>,
+    pub window_size: Option<WindowSize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -240,6 +249,13 @@ pub struct ExportsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSettingsResponse {
+    pub settings: PublicSettings,
+    pub exports: Vec<PublicExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RescanExportsResponse {
     pub settings: PublicSettings,
     pub exports: Vec<PublicExport>,
 }

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -36,8 +37,10 @@ import {
   fetchStats,
   openSavedSessionsFolder,
   pickSourceFolder,
+  rescanExports,
   saveOriginalImage,
   saveSessions,
+  updatePreferences,
   updateSettings
 } from "./data/apiClient.js";
 import { formatChatTimestamp, formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel } from "./data/formatters.js";
@@ -68,6 +71,7 @@ const LAYOUT_LIMITS = {
   sidebar: { min: 280, max: 560 },
   inspector: { min: 280, max: 540 }
 };
+const WINDOW_PREFERENCE_SAVE_DELAY_MS = 350;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -78,6 +82,32 @@ function normalizeLayout(value = {}) {
     sidebar: clamp(Number(value.sidebar) || DEFAULT_LAYOUT.sidebar, LAYOUT_LIMITS.sidebar.min, LAYOUT_LIMITS.sidebar.max),
     inspector: clamp(Number(value.inspector) || DEFAULT_LAYOUT.inspector, LAYOUT_LIMITS.inspector.min, LAYOUT_LIMITS.inspector.max)
   };
+}
+
+function normalizeWindowSize(value) {
+  const width = Math.round(Number(value?.width));
+  const height = Math.round(Number(value?.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 320 || height < 240) {
+    return null;
+  }
+  return { width, height };
+}
+
+function pickExportId(exports, preferredExportId = "") {
+  if (preferredExportId && exports.some((item) => item.id === preferredExportId)) {
+    return preferredExportId;
+  }
+  return exports[0]?.id || "";
+}
+
+async function applySavedWindowSize(windowSize) {
+  const normalized = normalizeWindowSize(windowSize);
+  if (!normalized) return;
+  try {
+    await getCurrentWindow().setSize(new PhysicalSize(normalized.width, normalized.height));
+  } catch {
+    // Browser-only development should still render even when Tauri window APIs are unavailable.
+  }
 }
 
 function formatImageResolution(image) {
@@ -252,6 +282,7 @@ function App() {
   const [mode, setMode] = useState(new URLSearchParams(window.location.search).get("view") === "library" ? "library" : "chat");
   const [settings, setSettings] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState("");
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
@@ -282,6 +313,7 @@ function App() {
   const [conversationPage, setConversationPage] = useState(null);
   const [libraryPage, setLibraryPage] = useState(null);
   const latestLoadStateRef = useRef({});
+  const windowPreferenceTimeoutRef = useRef(null);
 
   latestLoadStateRef.current = {
     selectedExportId,
@@ -324,15 +356,50 @@ function App() {
     Promise.all([fetchSettings(), fetchExports()])
       .then(([settingsPayload, exportPayload]) => {
         if (ignore) return;
-        setSettings(settingsPayload.settings ?? null);
+        const nextSettings = settingsPayload.settings ?? null;
+        const nextExports = exportPayload.exports ?? [];
+        const nextSelectedExportId = pickExportId(nextExports, settingsPayload.settings?.selectedExportId);
+        setSettings(nextSettings);
         setSettingsDraft(settingsPayload.settings?.sourceRoot ?? "");
-        setExports(exportPayload.exports ?? []);
-        setSelectedExportId((current) => current || exportPayload.exports?.[0]?.id || "");
+        setExports(nextExports);
+        setSelectedExportId(nextSelectedExportId);
+        setOnboardingOpen(!settingsPayload.settings?.sourceRoot);
+        void applySavedWindowSize(settingsPayload.settings?.windowSize);
       })
       .catch((nextError) => setError(nextError.message))
       .finally(() => !ignore && setBusy(""));
     return () => {
       ignore = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten = null;
+
+    async function bindWindowResizePersistence() {
+      try {
+        unlisten = await getCurrentWindow().onResized(({ payload }) => {
+          const nextWindowSize = normalizeWindowSize(payload);
+          if (!nextWindowSize) return;
+          if (windowPreferenceTimeoutRef.current) {
+            window.clearTimeout(windowPreferenceTimeoutRef.current);
+          }
+          windowPreferenceTimeoutRef.current = window.setTimeout(() => {
+            void updatePreferences({ windowSize: nextWindowSize }).catch(() => {});
+          }, WINDOW_PREFERENCE_SAVE_DELAY_MS);
+        });
+      } catch {
+        // The same bundle can be inspected in a plain browser during development.
+      }
+    }
+
+    void bindWindowResizePersistence();
+    return () => {
+      if (windowPreferenceTimeoutRef.current) {
+        window.clearTimeout(windowPreferenceTimeoutRef.current);
+        windowPreferenceTimeoutRef.current = null;
+      }
+      if (unlisten) void unlisten();
     };
   }, []);
 
@@ -409,6 +476,40 @@ function App() {
     };
   }, [selectedExportId, selectedConversationId, sourceVersion]);
 
+  const applySourcePayload = useCallback((payload, preferredExportId = "", { resetContent = true } = {}) => {
+    const nextSettings = payload.settings ?? null;
+    const nextExports = payload.exports ?? [];
+    const nextSelectedExportId = pickExportId(nextExports, preferredExportId || nextSettings?.selectedExportId);
+    setSettings(nextSettings);
+    setSettingsDraft(nextSettings?.sourceRoot ?? "");
+    setExports(nextExports);
+    setSelectedExportId(nextSelectedExportId);
+    if (resetContent) {
+      setSelectedConversationId("");
+      setSelectedConversationIds([]);
+      setLastSelectedConversationId("");
+      setSessionContextMenu(null);
+      setConversation(null);
+      setConversations([]);
+      setLibrary([]);
+      setSelectedImageId("");
+      setStats(null);
+      setConversationPage(null);
+      setLibraryPage(null);
+      setLightboxOpen(false);
+      setLightboxImage(null);
+    }
+    setSourceVersion((current) => current + 1);
+  }, []);
+
+  const selectExportId = useCallback((exportId) => {
+    setSelectedExportId(exportId);
+    if (!exportId) return;
+    void updatePreferences({ selectedExportId: exportId }).catch((nextError) => {
+      setError(nextError.message);
+    });
+  }, []);
+
   const openSettings = useCallback(() => {
     setSettingsDraft(settings?.sourceRoot ?? "");
     setSettingsError("");
@@ -418,6 +519,10 @@ function App() {
   const closeSettings = useCallback(() => {
     if (!settingsSaving) setSettingsOpen(false);
   }, [settingsSaving]);
+
+  const closeOnboarding = useCallback(() => {
+    if (!settingsSaving && settings?.sourceRoot) setOnboardingOpen(false);
+  }, [settings?.sourceRoot, settingsSaving]);
 
   const saveSettings = useCallback(
     async (event) => {
@@ -432,26 +537,10 @@ function App() {
       setBusy("Updating settings");
       try {
         const payload = await updateSettings({ sourceRoot });
-        const nextExports = payload.exports ?? [];
-        setSettings(payload.settings ?? null);
-        setExports(nextExports);
-        setSelectedExportId(nextExports[0]?.id || "");
-        setSelectedConversationId("");
-        setSelectedConversationIds([]);
-        setLastSelectedConversationId("");
-        setSessionContextMenu(null);
-        setConversation(null);
-        setConversations([]);
-        setLibrary([]);
-        setSelectedImageId("");
-        setStats(null);
-        setConversationPage(null);
-        setLibraryPage(null);
-        setLightboxOpen(false);
-        setLightboxImage(null);
-        setSourceVersion((current) => current + 1);
+        applySourcePayload(payload);
         setError("");
         setSettingsOpen(false);
+        setOnboardingOpen(false);
       } catch (nextError) {
         setSettingsError(nextError.message);
         setError(nextError.message);
@@ -460,8 +549,34 @@ function App() {
         setBusy("");
       }
     },
-    [settingsDraft]
+    [applySourcePayload, settingsDraft]
   );
+
+  const rescanSourceFolder = useCallback(async () => {
+    if (!settings?.sourceRoot) {
+      setSettingsDraft("");
+      setSettingsError("");
+      setOnboardingOpen(true);
+      return;
+    }
+    setBusy("Rescanning");
+    try {
+      const payload = await rescanExports();
+      applySourcePayload(payload, selectedExportId, { resetContent: false });
+      setOnboardingOpen(!payload.settings?.sourceRoot);
+      setError("");
+    } catch (nextError) {
+      applySourcePayload({
+        settings: settings ? { ...settings, sourceRoot: null, exportCount: 0, selectedExportId: null } : null,
+        exports: []
+      });
+      setError(nextError.message);
+      setSettingsError(nextError.message);
+      setOnboardingOpen(true);
+    } finally {
+      setBusy("");
+    }
+  }, [applySourcePayload, selectedExportId, settings?.sourceRoot]);
 
   const startResize = useCallback(
     (pane, event) => {
@@ -858,7 +973,7 @@ function App() {
         exports={exports}
         selectedExport={selectedExport}
         selectedExportId={selectedExportId}
-        setSelectedExportId={setSelectedExportId}
+        setSelectedExportId={selectExportId}
         query={query}
         setQuery={setQuery}
         conversationFilter={conversationFilter}
@@ -881,6 +996,7 @@ function App() {
         onLoadMoreConversations={loadMoreConversations}
         onLoadMoreLibrary={loadMoreLibrary}
         onOpenSettings={openSettings}
+        onRescanExports={rescanSourceFolder}
       />
 
       <ResizeHandle pane="sidebar" onPointerDown={startResize} onKeyDown={nudgeResize} />
@@ -935,6 +1051,19 @@ function App() {
           error={settingsError}
           onError={setSettingsError}
           onClose={closeSettings}
+          onSubmit={saveSettings}
+        />
+      )}
+
+      {onboardingOpen && !settingsOpen && (
+        <OnboardingDialog
+          settings={settings}
+          sourceRoot={settingsDraft}
+          setSourceRoot={setSettingsDraft}
+          saving={settingsSaving}
+          error={settingsError}
+          onError={setSettingsError}
+          onClose={closeOnboarding}
           onSubmit={saveSettings}
         />
       )}
@@ -1140,7 +1269,8 @@ function Sidebar({
   loadingMore,
   onLoadMoreConversations,
   onLoadMoreLibrary,
-  onOpenSettings
+  onOpenSettings,
+  onRescanExports
 }) {
   const virtualConversations = useVirtualList(conversations, {
     itemSize: CONVERSATION_ROW_SIZE,
@@ -1192,7 +1322,7 @@ function Sidebar({
         <button className="icon-button" aria-label="Settings" onClick={onOpenSettings}>
           <Settings size={17} />
         </button>
-        <button className="icon-button" aria-label="Refresh" onClick={() => window.location.reload()}>
+        <button className="icon-button" aria-label="Rescan source folder" onClick={onRescanExports}>
           <RefreshCcw size={17} />
         </button>
       </header>
@@ -1727,7 +1857,11 @@ function ImageContextMenu({ menu, image, onSaveImage, onClose }) {
   );
 }
 
-function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, onError, onClose, onSubmit }) {
+function OnboardingDialog(props) {
+  return <SettingsDialog {...props} onboarding canClose={Boolean(props.settings?.sourceRoot)} />;
+}
+
+function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, onError, onClose, onSubmit, onboarding = false, canClose = true }) {
   const [browsing, setBrowsing] = useState(false);
 
   const browseSourceFolder = useCallback(
@@ -1751,26 +1885,28 @@ function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, on
   useEffect(() => {
     document.body.classList.add("modal-open");
     const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && canClose) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       document.body.classList.remove("modal-open");
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [onClose]);
+  }, [canClose, onClose]);
 
   return (
-    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label="Settings">
+    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label={onboarding ? "Source folder onboarding" : "Settings"}>
       <form className="settings-dialog" onSubmit={onSubmit}>
         <header>
           <div>
             <Settings size={18} />
-            <h2>Settings</h2>
+            <h2>{onboarding ? "Choose source folder" : "Settings"}</h2>
           </div>
-          <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose} disabled={saving}>
-            <X size={18} />
-          </button>
+          {canClose && (
+            <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose} disabled={saving}>
+              <X size={18} />
+            </button>
+          )}
         </header>
 
         <label className="settings-field" htmlFor="source-folder-input">
@@ -1799,11 +1935,13 @@ function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, on
         {error && <p className="settings-error">{error}</p>}
 
         <footer>
-          <button type="button" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
+          {canClose && (
+            <button type="button" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+          )}
           <button type="submit" className="primary-button" disabled={saving}>
-            {saving ? "Applying..." : "Apply"}
+            {saving ? "Applying..." : onboarding ? "Start" : "Apply"}
           </button>
         </footer>
       </form>

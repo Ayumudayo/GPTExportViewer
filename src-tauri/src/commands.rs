@@ -6,9 +6,9 @@ use tauri_plugin_dialog::DialogExt;
 use crate::errors::{io_error, AppError, AppResult};
 use crate::models::{
     Conversation, ConversationStats, ConversationSummary, ExportsResponse, LibraryResponseItem,
-    LibraryStats, OpenFolderResponse, PagedResponse, RefreshIndexResponse,
+    LibraryStats, OpenFolderResponse, PagedResponse, RefreshIndexResponse, RescanExportsResponse,
     SaveOriginalImageResponse, SaveSessionsResponse, SettingsResponse, StatsResponse,
-    UpdateSettingsResponse,
+    UpdateSettingsResponse, WindowSize,
 };
 use crate::state::AppState;
 
@@ -28,6 +28,20 @@ pub fn update_settings(
     source_root: String,
 ) -> AppResult<UpdateSettingsResponse> {
     state.update_settings_response(source_root)
+}
+
+#[tauri::command]
+pub fn rescan_exports(state: State<'_, AppState>) -> AppResult<RescanExportsResponse> {
+    state.rescan_exports_response()
+}
+
+#[tauri::command]
+pub fn update_preferences(
+    state: State<'_, AppState>,
+    selected_export_id: Option<String>,
+    window_size: Option<WindowSize>,
+) -> AppResult<SettingsResponse> {
+    state.update_preferences_response(selected_export_id, window_size)
 }
 
 #[tauri::command]

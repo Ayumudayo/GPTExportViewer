@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use gpt_export_viewer_lib::models::SaveSessionsProgress;
+use gpt_export_viewer_lib::models::{SaveSessionsProgress, WindowSize};
 use gpt_export_viewer_lib::state::AppState;
 use serde_json::json;
 use tempfile::TempDir;
@@ -65,6 +65,114 @@ fn commands_update_settings_rescans_and_clears_stale_indexes() {
             .unwrap_err()
             .code(),
         "export_not_found"
+    );
+}
+
+#[test]
+fn commands_rescan_exports_tracks_folder_changes_and_reconciles_selection() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let original_export = state.get_exports_response().unwrap().exports[0].clone();
+    state
+        .update_preferences_response(Some(original_export.id.clone()), None)
+        .unwrap();
+
+    let added_export_dir = fixture.root.path().join("second-export");
+    fs::create_dir_all(&added_export_dir).unwrap();
+    write_export_fixture(&added_export_dir);
+
+    let added = state.rescan_exports_response().unwrap();
+    assert_eq!(added.exports.len(), 2);
+    assert_eq!(
+        added.settings.selected_export_id.as_deref(),
+        Some(original_export.id.as_str())
+    );
+
+    fs::remove_dir_all(fixture.root.path().join("chatgpt-export-good")).unwrap();
+    let removed = state.rescan_exports_response().unwrap();
+    assert_eq!(removed.exports.len(), 1);
+    assert_eq!(removed.exports[0].name, "second-export");
+    assert_eq!(
+        removed.settings.selected_export_id.as_deref(),
+        Some(removed.exports[0].id.as_str())
+    );
+    assert_eq!(
+        state
+            .get_stats_response(Some(original_export.id))
+            .unwrap_err()
+            .code(),
+        "export_not_found"
+    );
+}
+
+#[test]
+fn commands_rescan_clears_stale_exports_when_source_root_disappears() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+    state
+        .update_preferences_response(Some(export_id), None)
+        .unwrap();
+
+    fs::remove_dir_all(fixture.root.path()).unwrap();
+    let error = state.rescan_exports_response().unwrap_err();
+    assert_eq!(error.code(), "invalid_source_root");
+
+    let settings = state.get_settings_response().unwrap().settings;
+    assert_eq!(settings.source_root, None);
+    assert_eq!(settings.export_count, 0);
+    assert_eq!(settings.selected_export_id, None);
+    assert_eq!(state.get_exports_response().unwrap().exports.len(), 0);
+}
+
+#[test]
+fn commands_preferences_persist_selected_export_and_window_size() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+    let window_size = WindowSize {
+        width: 1440,
+        height: 900,
+    };
+
+    let saved = state
+        .update_preferences_response(Some(export_id.clone()), Some(window_size.clone()))
+        .unwrap();
+    assert_eq!(saved.settings.selected_export_id.as_deref(), Some(export_id.as_str()));
+    assert_eq!(saved.settings.window_size.as_ref(), Some(&window_size));
+
+    let restored = AppState::new_with_app_data(fixture.app_data.path(), None).unwrap();
+    let settings = restored.get_settings_response().unwrap().settings;
+    assert_eq!(settings.source_root.as_deref(), Some(fixture.root.path()));
+    assert_eq!(settings.selected_export_id.as_deref(), Some(export_id.as_str()));
+    assert_eq!(settings.window_size.as_ref(), Some(&window_size));
+}
+
+#[test]
+fn commands_first_run_without_source_root_starts_empty() {
+    let app_data = TempDir::new().unwrap();
+    let state = AppState::new_with_app_data(app_data.path(), None).unwrap();
+
+    let settings = state.get_settings_response().unwrap().settings;
+    assert_eq!(settings.source_root, None);
+    assert_eq!(settings.export_count, 0);
+    assert_eq!(settings.selected_export_id, None);
+    assert_eq!(state.get_exports_response().unwrap().exports.len(), 0);
+    assert_eq!(
+        state.rescan_exports_response().unwrap_err().code(),
+        "invalid_source_root"
     );
 }
 

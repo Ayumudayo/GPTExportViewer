@@ -16,9 +16,9 @@ use crate::library::{assets::resolve_asset, index::build_library_index};
 use crate::models::{
     CacheStatus, Conversation, ConversationIndex, ConversationStats, ConversationSummary,
     ExportItem, ExportsResponse, LibraryIndex, LibraryResponseItem, LibraryStats, PagedResponse,
-    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, ResolvedAsset,
-    SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse, SettingsResponse,
-    StatsResponse, UpdateSettingsResponse,
+    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, RescanExportsResponse,
+    ResolvedAsset, SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse,
+    SettingsResponse, StatsResponse, UpdateSettingsResponse, WindowSize,
 };
 use crate::paging::page_items;
 use crate::settings::{
@@ -40,6 +40,8 @@ struct StateInner {
     settings_file: PathBuf,
     exports: Vec<ExportItem>,
     indexes: HashMap<String, IndexedExport>,
+    selected_export_id: Option<String>,
+    window_size: Option<WindowSize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,11 +90,12 @@ impl AppState {
         let saved_sessions_dir = app_data_dir.join("Saved Sessions");
         let settings_file = app_data_dir.join("settings.json");
         let settings = read_runtime_settings(&settings_file)?;
-        let source_root = choose_source_root(settings.source_root, default_source_root);
+        let source_root = choose_source_root(settings.source_root.clone(), default_source_root);
         let exports = match &source_root {
             Some(root) => scan_exports(root)?,
             None => Vec::new(),
         };
+        let selected_export_id = reconcile_selected_export(settings.selected_export_id, &exports);
 
         Ok(Self {
             inner: Arc::new(Mutex::new(StateInner {
@@ -102,6 +105,8 @@ impl AppState {
                 settings_file,
                 exports,
                 indexes: HashMap::new(),
+                selected_export_id,
+                window_size: settings.window_size,
             })),
         })
     }
@@ -132,19 +137,79 @@ impl AppState {
         let exports = scan_exports(&resolved_root)?;
 
         let mut inner = self.lock()?;
-        write_runtime_settings(
-            &inner.settings_file,
-            &RuntimeSettings {
-                source_root: Some(resolved_root.clone()),
-            },
-        )?;
         inner.source_root = Some(resolved_root);
         inner.exports = exports;
         inner.indexes.clear();
+        inner.selected_export_id =
+            reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
+        persist_runtime_settings(&inner)?;
 
         Ok(UpdateSettingsResponse {
             settings: public_settings(&inner),
             exports: public_exports(&inner.exports),
+        })
+    }
+
+    pub fn rescan_exports_response(&self) -> AppResult<RescanExportsResponse> {
+        let source_root = {
+            let inner = self.lock()?;
+            inner
+                .source_root
+                .clone()
+                .ok_or_else(|| AppError::InvalidSourceRoot("source root not configured".to_string()))?
+        };
+        let scan_result =
+            resolve_source_root(&source_root).and_then(|resolved| scan_exports(&resolved).map(|exports| (resolved, exports)));
+        let (resolved_root, exports) = match scan_result {
+            Ok(result) => result,
+            Err(error) => {
+                let mut inner = self.lock()?;
+                inner.source_root = None;
+                inner.exports.clear();
+                inner.indexes.clear();
+                inner.selected_export_id = None;
+                persist_runtime_settings(&inner)?;
+                return Err(error);
+            }
+        };
+
+        let mut inner = self.lock()?;
+        inner.source_root = Some(resolved_root);
+        inner.exports = exports;
+        inner.indexes.clear();
+        inner.selected_export_id =
+            reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
+        persist_runtime_settings(&inner)?;
+
+        Ok(RescanExportsResponse {
+            settings: public_settings(&inner),
+            exports: public_exports(&inner.exports),
+        })
+    }
+
+    pub fn update_preferences_response(
+        &self,
+        selected_export_id: Option<String>,
+        window_size: Option<WindowSize>,
+    ) -> AppResult<SettingsResponse> {
+        let mut inner = self.lock()?;
+        if let Some(export_id) = selected_export_id {
+            let trimmed = export_id.trim();
+            if trimmed.is_empty() {
+                inner.selected_export_id = None;
+            } else if inner.exports.iter().any(|item| item.id == trimmed) {
+                inner.selected_export_id = Some(trimmed.to_string());
+            } else {
+                return Err(AppError::ExportNotFound);
+            }
+        }
+        if let Some(size) = valid_window_size(window_size) {
+            inner.window_size = Some(size);
+        }
+        persist_runtime_settings(&inner)?;
+
+        Ok(SettingsResponse {
+            settings: public_settings(&inner),
         })
     }
 
@@ -376,6 +441,30 @@ fn choose_source_root(
         .find_map(|candidate| resolve_source_root(&candidate).ok())
 }
 
+fn reconcile_selected_export(
+    selected_export_id: Option<String>,
+    exports: &[ExportItem],
+) -> Option<String> {
+    selected_export_id
+        .filter(|export_id| exports.iter().any(|item| item.id == *export_id))
+        .or_else(|| exports.first().map(|item| item.id.clone()))
+}
+
+fn valid_window_size(window_size: Option<WindowSize>) -> Option<WindowSize> {
+    window_size.filter(|size| size.width >= 320 && size.height >= 240)
+}
+
+fn persist_runtime_settings(inner: &StateInner) -> AppResult<()> {
+    write_runtime_settings(
+        &inner.settings_file,
+        &RuntimeSettings {
+            source_root: inner.source_root.clone(),
+            selected_export_id: inner.selected_export_id.clone(),
+            window_size: inner.window_size.clone(),
+        },
+    )
+}
+
 fn requested_export(inner: &StateInner, export_id: Option<String>) -> AppResult<ExportItem> {
     let requested_id = export_id.or_else(|| inner.exports.first().map(|item| item.id.clone()));
     let Some(requested_id) = requested_id else {
@@ -483,6 +572,8 @@ fn public_settings(inner: &StateInner) -> PublicSettings {
         source_root: inner.source_root.clone(),
         cache_dir: inner.cache_dir.clone(),
         export_count: inner.exports.len(),
+        selected_export_id: inner.selected_export_id.clone(),
+        window_size: inner.window_size.clone(),
     }
 }
 

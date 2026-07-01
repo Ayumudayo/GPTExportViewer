@@ -2,6 +2,8 @@ const COMMANDS = {
   fetchExports: "get_exports",
   fetchSettings: "get_settings",
   updateSettings: "update_settings",
+  rescanExports: "rescan_exports",
+  updatePreferences: "update_preferences",
   fetchStats: "get_stats",
   fetchConversations: "get_conversations",
   fetchConversation: "get_conversation",
@@ -36,6 +38,14 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
 
     async updateSettings({ sourceRoot }) {
       return invoke(COMMANDS.updateSettings, { sourceRoot });
+    },
+
+    async rescanExports() {
+      return invoke(COMMANDS.rescanExports);
+    },
+
+    async updatePreferences({ selectedExportId, windowSize } = {}) {
+      return invoke(COMMANDS.updatePreferences, { selectedExportId, windowSize });
     },
 
     async fetchStats(exportId) {
@@ -115,6 +125,14 @@ export async function pickSourceFolder(...args) {
 
 export async function updateSettings(...args) {
   return defaultClient().updateSettings(...args);
+}
+
+export async function rescanExports(...args) {
+  return defaultClient().rescanExports(...args);
+}
+
+export async function updatePreferences(...args) {
+  return defaultClient().updatePreferences(...args);
 }
 
 export async function fetchStats(...args) {
