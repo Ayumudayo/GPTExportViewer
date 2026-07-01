@@ -8,6 +8,7 @@ assert.equal(apiClient.includes("./tauriApiClient.js"), true, "Public API client
 assert.equal(apiClient.includes("httpApiClient"), false, "Public API client should not import the removed HTTP transport");
 assert.equal(apiClient.includes("saveSessions"), true, "Public API client should expose saveSessions");
 assert.equal(apiClient.includes("openSavedSessionsFolder"), true, "Public API client should expose openSavedSessionsFolder");
+assert.equal(apiClient.includes("saveOriginalImage"), true, "Public API client should expose original image saving");
 
 for (const command of [
   "get_exports",
@@ -19,16 +20,18 @@ for (const command of [
   "get_library",
   "refresh_index",
   "save_sessions",
-  "open_saved_sessions_folder"
+  "open_saved_sessions_folder",
+  "save_original_image"
 ]) {
   assert.equal(tauriClient.includes(command), true, `Tauri transport should invoke ${command}`);
 }
 
 assert.equal(tauriClient.includes("session-export-progress"), true, "Tauri transport should listen for session export progress");
 assert.equal(tauriClient.includes("@tauri-apps/plugin-dialog"), true, "Tauri transport should use the native dialog plugin");
-assert.equal(tauriClient.includes("gpt-export-asset://library/"), true, "Tauri asset URLs should use the custom protocol");
+assert.equal(tauriClient.includes("http://gpt-export-asset.localhost/library/"), true, "Tauri asset URLs should use the Windows WebView2 protocol bridge");
 assert.equal(tauriClient.includes("selectedPath"), true, "Tauri folder picker should return selectedPath");
 assert.equal(tauriClient.includes("canceled: true"), true, "Tauri folder picker should normalize cancellation");
+assert.equal(tauriClient.includes("displayName"), false, "Image saving should not depend on renderer-provided filenames");
 assert.match(tauriClient, /page:\s*payload\.page/, "Tauri paged responses should preserve the page envelope");
 
 const { createTauriApiClient } = await import("../src/data/tauriApiClient.js");
@@ -48,6 +51,9 @@ const client = createTauriApiClient({
         progress: { exportId: "exp", total: 1, completed: 1 }
       };
     }
+    if (command === "save_original_image") {
+      return { canceled: false, path: "E:\\Images\\image.png", fileName: "image.png" };
+    }
     return {};
   },
   openDialog: async () => "E:\\OpenAI\\Exports",
@@ -58,7 +64,7 @@ const client = createTauriApiClient({
   }
 });
 
-assert.equal(client.assetUrl("export id", "file/id"), "gpt-export-asset://library/export%20id/file%2Fid");
+assert.equal(client.assetUrl("export id", "file/id"), "http://gpt-export-asset.localhost/library/export%20id/file%2Fid");
 assert.deepEqual(await client.pickSourceFolder({ initialPath: "E:\\OpenAI" }), { folder: { selectedPath: "E:\\OpenAI\\Exports" } });
 assert.deepEqual(
   await createTauriApiClient({ invoke: async () => ({}), openDialog: async () => null }).pickSourceFolder({ initialPath: "E:\\OpenAI" }),
@@ -90,6 +96,14 @@ assert.deepEqual(events, ["session-export-progress", "unlisten"]);
 assert.deepEqual(progressPayloads, [{ exportId: "exp", total: 1, completed: 1 }]);
 await client.openSavedSessionsFolder({ exportId: "exp" });
 assert.equal(calls.some((call) => call.command === "open_saved_sessions_folder"), true);
+assert.deepEqual(await client.saveOriginalImage({ exportId: "exp", fileId: "file-img-1" }), {
+  canceled: false,
+  path: "E:\\Images\\image.png",
+  fileName: "image.png"
+});
+const imageSaveCall = calls.findLast((call) => call.command === "save_original_image");
+assert.equal(imageSaveCall.args.exportId, "exp");
+assert.equal(imageSaveCall.args.fileId, "file-img-1");
 
 const fallbackProgress = [];
 const fallbackClient = createTauriApiClient({

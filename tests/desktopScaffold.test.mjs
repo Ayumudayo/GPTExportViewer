@@ -25,6 +25,11 @@ assert.equal(tauriConfig.bundle.windows.minimumWebview2Version, "110.0.1531.0");
 assert.notEqual(tauriConfig.app.security.csp, null, "Desktop build should not disable CSP");
 assert.match(tauriConfig.app.security.csp, /connect-src ipc: http:\/\/ipc\.localhost/, "CSP should allow Tauri IPC");
 assert.match(tauriConfig.app.security.csp, /gpt-export-asset:/, "CSP should allow the private asset protocol");
+assert.match(
+  tauriConfig.app.security.csp,
+  /http:\/\/gpt-export-asset\.localhost/,
+  "CSP should allow the Windows custom-protocol bridge URL for images"
+);
 
 assert.match(cargoToml, /tauri-plugin-dialog/, "Rust scaffold should depend on tauri-plugin-dialog");
 assert.match(mainRs, /windows_subsystem\s*=\s*"windows"/, "Release desktop exe should use the Windows GUI subsystem");
@@ -32,6 +37,7 @@ assert.match(mainRs, /not\(debug_assertions\)/, "Windows GUI subsystem should be
 assert.match(libRs, /tauri_plugin_dialog::init\(\)/, "Rust scaffold should register the dialog plugin");
 assert.match(libRs, /get_exports/, "Rust scaffold should register boot-safe commands");
 assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time commands");
+assert.match(libRs, /save_original_image/, "Rust scaffold should register original image saving");
 
 assert.match(readme, /Tauri\/Rust/, "Desktop docs should name Tauri/Rust as the primary target");
 assert.equal(readme.includes("Node server"), false, "Desktop docs should not document the removed Node API server");

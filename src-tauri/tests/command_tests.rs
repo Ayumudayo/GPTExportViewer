@@ -116,7 +116,23 @@ fn commands_get_conversations_library_and_conversation_pages() {
     assert_eq!(library.page.next_cursor.as_deref(), Some("1"));
     assert!(library.items[0]
         .asset_url
-        .starts_with("gpt-export-asset://library/"));
+        .starts_with("http://gpt-export-asset.localhost/library/"));
+    let full_library = state
+        .get_library_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    let linked_image = full_library
+        .items
+        .iter()
+        .find(|item| item.item.file_id == "file-img-1")
+        .unwrap();
+    assert_eq!(linked_image.item.width, Some(1024));
+    assert_eq!(linked_image.item.height, Some(1536));
 
     let unicode_library = state
         .get_library_response(
@@ -137,6 +153,8 @@ fn commands_get_conversations_library_and_conversation_pages() {
         .get_conversation_response(Some(export_id), "conv-1".to_string(), Some(0), Some(1))
         .unwrap();
     assert_eq!(conversation.messages.len(), 1);
+    let serialized_message = serde_json::to_value(&conversation.messages[0]).unwrap();
+    assert_eq!(serialized_message["parts"][0]["partType"], "text");
     assert_eq!(conversation.range.unwrap().next_start, Some(1));
 }
 
@@ -325,6 +343,66 @@ fn commands_save_sessions_rejects_missing_session_before_writing() {
 }
 
 #[test]
+fn commands_save_original_image_copies_resolved_asset_to_destination() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+    let destination = fixture
+        .app_data
+        .path()
+        .join("Saved Images")
+        .join("library.png");
+
+    let response = state
+        .save_original_image_to_path(
+            Some(export_id),
+            "file-img-1".to_string(),
+            destination.clone(),
+        )
+        .unwrap();
+
+    assert_eq!(response.file_id, "file-img-1");
+    assert_eq!(response.file_name, "renamed library.png");
+    assert_eq!(response.mime_type, "image/png");
+    assert_eq!(response.path.as_deref(), Some(destination.as_path()));
+    assert_eq!(response.bytes_written, 8);
+    assert!(!response.canceled);
+    assert_eq!(
+        fs::read(destination).unwrap(),
+        fs::read(
+            fixture
+                .root
+                .path()
+                .join("chatgpt-export-good")
+                .join("file-img-1.dat")
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn commands_save_original_image_rejects_invalid_file_ids() {
+    let fixture = make_command_fixture();
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+    let destination = fixture.app_data.path().join("escape.png");
+
+    let error = state
+        .save_original_image_to_path(Some(export_id), "..\\escape".to_string(), destination)
+        .unwrap_err();
+
+    assert_eq!(error.code(), "invalid_file_id");
+}
+
+#[test]
 fn commands_saved_sessions_dir_for_export_returns_app_data_folder() {
     let fixture = make_command_fixture();
     let state = AppState::new_with_app_data(
@@ -431,6 +509,8 @@ fn write_export_fixture(root: &Path) {
                 "file_name": "library generated.png",
                 "mime_type": "image/png",
                 "file_size_bytes": 8,
+                "width": 1024,
+                "height": 1536,
                 "created_at": "2024-03-09T16:00:02Z",
                 "state": "ready",
                 "library_file_category": "image",

@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::errors::{io_error, AppError, AppResult};
-use crate::library::mime::infer_mime_from_name;
+use crate::library::{dimensions::read_image_dimensions, mime::infer_mime_from_name};
 use crate::models::{ExportItem, LibraryIndex, LibraryItem, LibraryStats};
 use crate::time::{generated_at, to_iso_time};
 
@@ -70,6 +70,11 @@ pub fn build_library_index(
                 "size",
             ],
         );
+        let metadata_dimensions = dimension_fields(&file);
+        let file_dimensions = exists
+            .then(|| read_image_dimensions(&stored_path, &mime))
+            .flatten();
+        let (width, height) = metadata_dimensions.or(file_dimensions).unzip();
         let created_at = optional_time_field(
             &file,
             &[
@@ -114,6 +119,8 @@ pub fn build_library_index(
             mime,
             size_bytes,
             size_label: format_bytes(size_bytes),
+            width,
+            height,
             created_at,
             status,
             file_ref: stored_name,
@@ -215,6 +222,31 @@ fn numeric_field(value: &Value, keys: &[&str]) -> u64 {
             })
         })
         .unwrap_or(0)
+}
+
+fn numeric_u32_field(value: &Value, keys: &[&str]) -> Option<u32> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(|value| {
+            value
+                .as_u64()
+                .and_then(|number| u32::try_from(number).ok())
+                .or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|number| {
+                            number.is_finite() && *number > 0.0 && *number <= u32::MAX as f64
+                        })
+                        .map(|number| number as u32)
+                })
+        })
+        .filter(|number| *number > 0)
+}
+
+fn dimension_fields(value: &Value) -> Option<(u32, u32)> {
+    let width = numeric_u32_field(value, &["width", "image_width", "imageWidth"])?;
+    let height = numeric_u32_field(value, &["height", "image_height", "imageHeight"])?;
+    Some((width, height))
 }
 
 fn optional_time_field(value: &Value, keys: &[&str]) -> Option<String> {

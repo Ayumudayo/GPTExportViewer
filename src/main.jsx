@@ -36,10 +36,11 @@ import {
   fetchStats,
   openSavedSessionsFolder,
   pickSourceFolder,
+  saveOriginalImage,
   saveSessions,
   updateSettings
 } from "./data/apiClient.js";
-import { formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel, truncate } from "./data/formatters.js";
+import { formatChatTimestamp, formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel } from "./data/formatters.js";
 import { copyMessageText as copyMessageTextToClipboard } from "./chatReaderHelpers.js";
 import { getAdjacentIndex, getWheelDirection } from "./libraryNavigation.js";
 import { useMeasuredVirtualList, useScrollViewport } from "./measuredVirtualList.js";
@@ -49,6 +50,7 @@ import "./styles.css";
 const CONVERSATION_ROW_SIZE = 64;
 const LIBRARY_SIDE_ROW_SIZE = 68;
 const ESTIMATED_MESSAGE_ROW_SIZE = 96;
+const MESSAGE_COLLAPSE_LIMIT = 1200;
 const GALLERY_ROW_SIZE = 284;
 const GALLERY_MIN_CARD_WIDTH = 176;
 const GALLERY_GAP = 14;
@@ -75,6 +77,30 @@ function normalizeLayout(value = {}) {
   return {
     sidebar: clamp(Number(value.sidebar) || DEFAULT_LAYOUT.sidebar, LAYOUT_LIMITS.sidebar.min, LAYOUT_LIMITS.sidebar.max),
     inspector: clamp(Number(value.inspector) || DEFAULT_LAYOUT.inspector, LAYOUT_LIMITS.inspector.min, LAYOUT_LIMITS.inspector.max)
+  };
+}
+
+function formatImageResolution(image) {
+  const width = Number(image?.width);
+  const height = Number(image?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return "Unknown resolution";
+  }
+  return `${Math.round(width)}x${Math.round(height)}`;
+}
+
+function lightboxSizeStyle(image) {
+  const width = Number(image?.width);
+  const height = Number(image?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return {};
+  }
+  const preferredWidth = Math.max(520, Math.min(1640, Math.round(width + 168)));
+  const preferredHeight = Math.max(320, Math.min(1040, Math.round(height + 132)));
+  return {
+    "--lightbox-width": `${preferredWidth}px`,
+    "--lightbox-height": `${preferredHeight}px`,
+    "--lightbox-aspect": `${Math.round(width)} / ${Math.round(height)}`
   };
 }
 
@@ -248,6 +274,7 @@ function App() {
   const [selectedImageId, setSelectedImageId] = useState("");
   const [stats, setStats] = useState(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState(null);
   const [busy, setBusy] = useState("Starting");
   const [loadingMore, setLoadingMore] = useState("");
   const loadingMoreKeyRef = useRef("");
@@ -279,6 +306,16 @@ function App() {
     if (loadingMoreKeyRef.current !== key) return;
     loadingMoreKeyRef.current = "";
     setLoadingMore("");
+  }, []);
+
+  useEffect(() => {
+    const preventNativeContextMenu = (event) => {
+      event.preventDefault();
+    };
+    window.addEventListener("contextmenu", preventNativeContextMenu, { capture: true });
+    return () => {
+      window.removeEventListener("contextmenu", preventNativeContextMenu, { capture: true });
+    };
   }, []);
 
   useEffect(() => {
@@ -411,6 +448,7 @@ function App() {
         setConversationPage(null);
         setLibraryPage(null);
         setLightboxOpen(false);
+        setLightboxImage(null);
         setSourceVersion((current) => current + 1);
         setError("");
         setSettingsOpen(false);
@@ -640,13 +678,58 @@ function App() {
 
   const selectedExport = exports.find((item) => item.id === selectedExportId) ?? null;
   const selectedImage = library.find((item) => item.fileId === selectedImageId) ?? library[0] ?? null;
-  const selectedImageIndex = Math.max(library.findIndex((item) => item.fileId === selectedImage?.fileId), 0);
+  const activeLightboxImage = lightboxImage ?? selectedImage;
+  const activeLightboxLibraryIndex = library.findIndex((item) => item.fileId === activeLightboxImage?.fileId);
+  const activeLightboxInLibrary = activeLightboxLibraryIndex >= 0;
+  const activeLightboxIndex = activeLightboxInLibrary ? activeLightboxLibraryIndex : 0;
+  const activeLightboxTotal = activeLightboxInLibrary ? library.length : activeLightboxImage ? 1 : 0;
+
+  const openImagePreview = useCallback(
+    (image) => {
+      if (!image?.fileId) return;
+      const libraryImage = library.find((item) => item.fileId === image.fileId);
+      const knownImage = libraryImage
+        ? {
+            ...libraryImage,
+            width: libraryImage.width ?? image.width,
+            height: libraryImage.height ?? image.height
+          }
+        : image;
+      if (knownImage.fileId) setSelectedImageId(knownImage.fileId);
+      setLightboxImage(knownImage);
+      setLightboxOpen(true);
+    },
+    [library]
+  );
+
+  const closeImagePreview = useCallback(() => {
+    setLightboxOpen(false);
+    setLightboxImage(null);
+  }, []);
+
+  const saveImage = useCallback(
+    async (image) => {
+      if (!selectedExportId || !image?.fileId) return;
+      setError("");
+      setBusy("Saving image");
+      try {
+        await saveOriginalImage({ exportId: selectedExportId, fileId: image.fileId });
+      } catch (nextError) {
+        setError(nextError?.message ?? "Failed to save image");
+      } finally {
+        setBusy("");
+      }
+    },
+    [selectedExportId]
+  );
 
   const openPreviewFromQuery = useCallback(() => {
     const preview = new URLSearchParams(window.location.search).get("preview");
-    if (preview && library.some((item) => item.fileId === preview)) {
+    const previewImage = library.find((item) => item.fileId === preview);
+    if (previewImage) {
       setSelectedImageId(preview);
       setMode("library");
+      setLightboxImage(previewImage);
       setLightboxOpen(true);
     }
   }, [library]);
@@ -657,11 +740,15 @@ function App() {
 
   const moveLightbox = useCallback(
     (direction) => {
-      if (!library.length) return;
-      const nextIndex = getAdjacentIndex(selectedImageIndex, direction, library.length);
-      if (nextIndex >= 0) setSelectedImageId(library[nextIndex].fileId);
+      const currentIndex = library.findIndex((item) => item.fileId === (lightboxImage?.fileId ?? selectedImageId));
+      if (!library.length || currentIndex < 0) return;
+      const nextIndex = getAdjacentIndex(currentIndex, direction, library.length);
+      if (nextIndex >= 0) {
+        setSelectedImageId(library[nextIndex].fileId);
+        setLightboxImage(library[nextIndex]);
+      }
     },
-    [library, selectedImageIndex]
+    [library, lightboxImage?.fileId, selectedImageId]
   );
 
   const loadMoreConversations = useCallback(async () => {
@@ -800,12 +887,14 @@ function App() {
 
       {mode === "chat" ? (
         <ChatReader
+          exportId={selectedExportId}
           conversation={conversation}
           selectedSummary={conversations.find((item) => item.id === selectedConversationId)}
           resetKey={`${selectedExportId}:${selectedConversationId}`}
           busy={busy}
           loadingMore={loadingMore}
           onLoadMoreMessages={loadMoreMessages}
+          onOpenImage={openImagePreview}
         />
       ) : (
         <LibraryReader
@@ -820,13 +909,22 @@ function App() {
           busy={busy}
           loadingMore={loadingMore}
           onLoadMoreLibrary={loadMoreLibrary}
-          openLightbox={() => setLightboxOpen(true)}
+          openLightbox={() => openImagePreview(selectedImage)}
         />
       )}
 
       <ResizeHandle pane="inspector" onPointerDown={startResize} onKeyDown={nudgeResize} />
 
-      <Inspector mode={mode} selectedExport={selectedExport} conversation={conversation} image={selectedImage} stats={stats} error={error} />
+      <Inspector
+        mode={mode}
+        selectedExport={selectedExport}
+        conversation={conversation}
+        image={selectedImage}
+        stats={stats}
+        error={error}
+        onPreviewImage={openImagePreview}
+        onSaveImage={saveImage}
+      />
 
       {settingsOpen && (
         <SettingsDialog
@@ -850,14 +948,15 @@ function App() {
 
       <ExportProgressDialog job={sessionExportJob} onOpenFolder={openExportFolder} onClose={closeExportProgressDialog} />
 
-      {lightboxOpen && selectedImage && (
+      {lightboxOpen && activeLightboxImage && (
         <ImageLightbox
           exportId={selectedExportId}
-          image={selectedImage}
-          currentIndex={selectedImageIndex}
-          total={library.length}
-          onClose={() => setLightboxOpen(false)}
+          image={activeLightboxImage}
+          currentIndex={activeLightboxIndex}
+          total={activeLightboxTotal}
+          onClose={closeImagePreview}
           onMove={moveLightbox}
+          onSaveImage={saveImage}
         />
       )}
     </div>
@@ -1256,9 +1355,10 @@ function Sidebar({
   );
 }
 
-function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore, onLoadMoreMessages }) {
+function ChatReader({ exportId, conversation, selectedSummary, resetKey, busy, loadingMore, onLoadMoreMessages, onOpenImage }) {
   const title = conversation?.title ?? selectedSummary?.title ?? "No session selected";
   const messages = conversation?.messages ?? [];
+  const [expandedMessageIds, setExpandedMessageIds] = useState(() => new Set());
   const virtualMessages = useMeasuredVirtualList(messages, {
     estimatedItemSize: ESTIMATED_MESSAGE_ROW_SIZE,
     overscan: 12,
@@ -1273,6 +1373,22 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
   const copyMessageText = useCallback(async (text) => {
     await copyMessageTextToClipboard(text);
   }, []);
+  const isMessageExpanded = useCallback((messageId) => expandedMessageIds.has(messageId), [expandedMessageIds]);
+  const toggleMessageExpanded = useCallback((messageId) => {
+    setExpandedMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setExpandedMessageIds(new Set());
+  }, [resetKey]);
 
   return (
     <main className="reader">
@@ -1289,36 +1405,53 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
 
       <div className="range-strip">
         <span>{messages.length ? `Showing ${messages.length} of ${conversation.totalMessages}` : busy || "No messages"}</span>
-        <span>{formatDate(conversation?.updatedAt, "")}</span>
+        <span>{formatChatTimestamp(conversation?.updatedAt, "")}</span>
       </div>
 
       <section className="message-window scroll-window" ref={virtualMessages.containerRef}>
         <VirtualSpacer size={virtualMessages.beforeSize} />
-        {virtualMessages.items.map(({ item: message }) => (
-          <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id} ref={virtualMessages.measureItem(message.id)}>
-            <div className="avatar">{roleInitial(message.role)}</div>
-            <div className="message-body">
-              <button type="button" className="message-copy-button" aria-label="Copy message" onClick={() => void copyMessageText(message.text ?? "")}>
-                <Copy size={14} />
-              </button>
-              <div className="message-meta">
-                <strong>{roleLabel(message.role)}</strong>
-                <time>{formatDate(message.createdAt, "")}</time>
-              </div>
-              <p>{truncate(message.text || "(empty message)", 1000)}</p>
-              {message.assetRefs?.length > 0 && (
-                <div className="attachment-chips">
-                  {message.assetRefs.slice(0, 6).map((asset) => (
-                    <span key={`${message.id}-${asset.fileId}`}>
-                      <Paperclip size={13} />
-                      {asset.name ?? asset.fileId}
-                    </span>
-                  ))}
+        {virtualMessages.items.map(({ item: message }) => {
+          const isLong = (message.text?.length ?? 0) > MESSAGE_COLLAPSE_LIMIT;
+          const expanded = !isLong || isMessageExpanded(message.id);
+          const parts = message.parts ?? [];
+          const displayParts = parts.length ? parts : [{ partType: "text", text: message.text || "(empty message)" }];
+          const renderedPartFileIds = new Set(displayParts.map((part) => part.fileId).filter(Boolean));
+          const extraAssetRefs = (message.assetRefs ?? []).filter((asset) => !renderedPartFileIds.has(asset.fileId));
+          return (
+            <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id} ref={virtualMessages.measureItem(message.id)}>
+              <div className="avatar">{roleInitial(message.role)}</div>
+              <div className={`message-body ${isLong && !expanded ? "collapsed" : ""}`}>
+                <div className="message-meta">
+                  <strong>{roleLabel(message.role)}</strong>
+                  <time>{formatChatTimestamp(message.createdAt, "")}</time>
                 </div>
-              )}
-            </div>
-          </article>
-        ))}
+                <div className="message-parts">
+                  {displayParts.map((part, index) => renderMessagePart(part, message, index, exportId, isLong && !expanded, onOpenImage))}
+                </div>
+                {extraAssetRefs.length > 0 && (
+                  <div className="attachment-chips">
+                    {extraAssetRefs.slice(0, 6).map((asset) => (
+                      <span key={`${message.id}-${asset.fileId}`}>
+                        <Paperclip size={13} />
+                        {asset.name ?? asset.fileId}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {isLong && (
+                  <div className="message-actions">
+                    <button type="button" className="message-expand-button" onClick={() => toggleMessageExpanded(message.id)}>
+                      {expanded ? "Collapse message" : "Show full message"}
+                    </button>
+                  </div>
+                )}
+                <button type="button" className="message-copy-button" aria-label="Copy message" title="Copy message" onClick={() => void copyMessageText(message.text ?? "")}>
+                  <Copy size={14} />
+                </button>
+              </div>
+            </article>
+          );
+        })}
         <VirtualSpacer size={virtualMessages.afterSize} />
         {conversation?.range?.nextStart != null && (
           <div className={`auto-load-sentinel ${loadingMore === "messages" ? "loading" : ""}`} ref={messageAutoLoadRef} role="status" aria-live="polite" aria-busy={loadingMore === "messages"}>
@@ -1343,6 +1476,58 @@ function ChatReader({ conversation, selectedSummary, resetKey, busy, loadingMore
         <span>Local only</span>
       </footer>
     </main>
+  );
+}
+
+function renderMessagePart(part, message, index, exportId, collapsed, onOpenImage) {
+  const partType = part.partType ?? part.type ?? "text";
+  const key = `${message.id}-${index}-${part.fileId ?? partType}`;
+  if (partType === "image" && part.fileId && exportId) {
+    const image = {
+      fileId: part.fileId,
+      displayName: part.name ?? part.fileId,
+      mime: part.mimeType ?? part.mime ?? "image",
+      sizeLabel: "",
+      sourceState: "linked",
+      status: "ready",
+      exists: true,
+      width: part.width,
+      height: part.height
+    };
+    return (
+      <button type="button" className="chat-image-button" key={key} onClick={() => onOpenImage?.(image)} aria-label={`Open ${image.displayName}`}>
+        <figure className="chat-image">
+          <img src={assetUrl(exportId, part.fileId)} alt={image.displayName} loading="lazy" />
+          {(part.name || part.width || part.height) && (
+            <figcaption>
+              <FileImage size={13} />
+              <span>{part.name ?? part.fileId}</span>
+              {part.width && part.height && <em>{part.width}x{part.height}</em>}
+            </figcaption>
+          )}
+        </figure>
+      </button>
+    );
+  }
+
+  if ((partType === "file" || part.fileId) && part.fileId) {
+    return (
+      <div className="attachment-chips" key={key}>
+        <span>
+          <Paperclip size={13} />
+          {part.name ?? part.fileId}
+        </span>
+      </div>
+    );
+  }
+
+  const text = String(part.text ?? "");
+  const visibleText = collapsed && text.length > MESSAGE_COLLAPSE_LIMIT ? `${text.slice(0, MESSAGE_COLLAPSE_LIMIT).trimEnd()}...` : text;
+  if (!visibleText) return null;
+  return (
+    <p className={`message-text ${collapsed ? "collapsed" : ""}`} key={key}>
+      {visibleText}
+    </p>
   );
 }
 
@@ -1444,7 +1629,15 @@ function LibraryReader({ exportId, images, image, selectedImageId, setSelectedIm
   );
 }
 
-function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove }) {
+function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove, onSaveImage }) {
+  const [imageContextMenu, setImageContextMenu] = useState(null);
+  const closeImageContextMenu = useCallback(() => setImageContextMenu(null), []);
+  const openImageContextMenu = useCallback((event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setImageContextMenu({ x: event.clientX, y: event.clientY });
+  }, []);
+
   useEffect(() => {
     document.body.classList.add("modal-open");
     const onKeyDown = (event) => {
@@ -1465,8 +1658,15 @@ function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove }
   };
 
   return (
-    <div className="lightbox-backdrop" role="dialog" aria-modal="true" aria-label="Image preview" onWheel={onWheel}>
-      <div className="lightbox-shell">
+    <div className="lightbox-backdrop" role="dialog" aria-modal="true" aria-label="Image preview" onWheel={onWheel} onClick={onClose}>
+      <div
+        className="lightbox-shell"
+        style={lightboxSizeStyle(image)}
+        onClick={(event) => {
+          event.stopPropagation();
+          closeImageContextMenu();
+        }}
+      >
         <header className="lightbox-header">
           <div>
             <strong>{image.displayName}</strong>
@@ -1482,7 +1682,7 @@ function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove }
           <button className="lightbox-step previous" aria-label="Previous image" onClick={() => onMove(-1)}>
             <ArrowLeft size={22} />
           </button>
-          <div className="lightbox-image real-image">
+          <div className="lightbox-image real-image" onContextMenu={openImageContextMenu}>
             <img src={assetUrl(exportId, image.fileId)} alt={image.displayName} />
           </div>
           <button className="lightbox-step next" aria-label="Next image" onClick={() => onMove(1)}>
@@ -1491,10 +1691,38 @@ function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove }
         </div>
         <footer className="lightbox-footer">
           <span>{image.mime}</span>
+          <span>{formatImageResolution(image)}</span>
           <span>{image.sourceState}</span>
           <span>{image.status}</span>
         </footer>
       </div>
+      <ImageContextMenu menu={imageContextMenu} image={image} onSaveImage={onSaveImage} onClose={closeImageContextMenu} />
+    </div>
+  );
+}
+
+function ImageContextMenu({ menu, image, onSaveImage, onClose }) {
+  if (!menu || !image) return null;
+  return (
+    <div
+      className="image-context-menu"
+      role="group"
+      aria-label="Image actions"
+      style={{ left: menu.x, top: menu.y }}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          onClose();
+          onSaveImage?.(image);
+        }}
+      >
+        <FileDown size={15} />
+        Save original image
+      </button>
     </div>
   );
 }
@@ -1583,7 +1811,7 @@ function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, on
   );
 }
 
-function Inspector({ mode, selectedExport, conversation, image, stats, error }) {
+function Inspector({ mode, selectedExport, conversation, image, stats, error, onPreviewImage, onSaveImage }) {
   return (
     <aside className="inspector">
       <Panel title="Export" icon={<Info size={17} />}>
@@ -1628,6 +1856,18 @@ function Inspector({ mode, selectedExport, conversation, image, stats, error }) 
         <>
           <Panel title="Image details" icon={<FileImage size={17} />}>
             {image && <Thumb exportId={selectedExport?.id} image={image} preview />}
+            {image && (
+              <div className="inspector-actions">
+                <button type="button" onClick={() => onPreviewImage?.(image)} disabled={!image.exists}>
+                  <ZoomIn size={15} />
+                  Original view
+                </button>
+                <button type="button" onClick={() => onSaveImage?.(image)} disabled={!image.exists}>
+                  <FileDown size={15} />
+                  Save original image
+                </button>
+              </div>
+            )}
             <dl className="detail-grid">
               <dt>Name</dt>
               <dd>{image?.displayName ?? "-"}</dd>
@@ -1635,6 +1875,8 @@ function Inspector({ mode, selectedExport, conversation, image, stats, error }) 
               <dd>{image?.mime ?? "-"}</dd>
               <dt>Size</dt>
               <dd>{image?.sizeLabel ?? "-"}</dd>
+              <dt>Resolution</dt>
+              <dd>{formatImageResolution(image)}</dd>
               <dt>Status</dt>
               <dd>{image?.status ?? "-"}</dd>
               <dt>File</dt>

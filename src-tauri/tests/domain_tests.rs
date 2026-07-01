@@ -5,6 +5,7 @@ use gpt_export_viewer_lib::{
     asset_protocol, cache, conversations, exports, fs_guards, library, paging, settings, webview2,
 };
 use serde_json::json;
+use sha1::{Digest, Sha1};
 use tempfile::TempDir;
 
 #[test]
@@ -182,6 +183,126 @@ fn conversations_normalize_multimodal_text_and_asset_refs() {
 }
 
 #[test]
+fn conversations_normalize_multimodal_parts_keep_user_image_order() {
+    let conversation = json!({
+        "id": "conv-with-user-image",
+        "mapping": {
+            "msg1": {
+                "id": "msg1",
+                "parent": null,
+                "children": [],
+                "message": {
+                    "id": "m1",
+                    "author": { "role": "user" },
+                    "create_time": 1780990666.348,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "asset_pointer": "sediment://file-user-image",
+                                "content_type": "image_asset_pointer",
+                                "height": 1536,
+                                "width": 1024
+                            },
+                            "Please adjust this image"
+                        ]
+                    },
+                    "metadata": {
+                        "attachments": [
+                            {
+                                "height": 1536,
+                                "id": "file-user-image",
+                                "mime_type": "image/png",
+                                "name": "input.png",
+                                "source": "local",
+                                "width": 1024
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+    let normalized = conversations::normalize::normalize_conversation(&conversation).unwrap();
+    let message = &normalized.messages[0];
+
+    assert_eq!(message.text, "Please adjust this image");
+    assert_eq!(message.asset_refs.len(), 1);
+    assert_eq!(message.asset_refs[0].file_id, "file-user-image");
+    assert_eq!(message.asset_refs[0].name.as_deref(), Some("input.png"));
+    assert_eq!(message.parts.len(), 2);
+    assert_eq!(message.parts[0].part_type, "image");
+    assert_eq!(message.parts[0].file_id.as_deref(), Some("file-user-image"));
+    assert_eq!(message.parts[0].name.as_deref(), Some("input.png"));
+    assert_eq!(message.parts[0].mime_type.as_deref(), Some("image/png"));
+    assert_eq!(message.parts[0].width, Some(1024));
+    assert_eq!(message.parts[0].height, Some(1536));
+    assert_eq!(message.parts[1].part_type, "text");
+    assert_eq!(
+        message.parts[1].text.as_deref(),
+        Some("Please adjust this image")
+    );
+}
+
+#[test]
+fn conversations_legacy_cached_messages_without_parts_do_not_break_loading() {
+    let fixture = make_export_fixture();
+    let export_item = exports::describe_export(&fixture.good).unwrap();
+    let conversations_fingerprint =
+        cache::file_fingerprint(&export_item.paths.conversations).unwrap();
+    let old_digest = legacy_conversation_cache_digest(
+        "conv-1",
+        &conversations_fingerprint.path.to_string_lossy(),
+        conversations_fingerprint.size,
+        conversations_fingerprint.mtime_ms,
+        conversations_fingerprint.missing,
+    );
+    let legacy_cache_file = fixture
+        .cache_dir
+        .path()
+        .join(&export_item.id)
+        .join("conversations")
+        .join(format!("conv-1-{old_digest}.json"));
+    let legacy_cache = json!({
+        "id": "conv-1",
+        "title": "Legacy cached conversation",
+        "createdAt": null,
+        "updatedAt": null,
+        "model": null,
+        "archived": false,
+        "starred": false,
+        "totalMessages": 1,
+        "messages": [
+            {
+                "id": "legacy",
+                "nodeId": "legacy",
+                "ordinal": 1,
+                "role": "user",
+                "author": "user",
+                "createdAt": null,
+                "contentType": "text",
+                "text": "legacy cache should not be reused",
+                "assetRefs": []
+            }
+        ]
+    });
+    cache::write_json_atomic(&legacy_cache_file, &legacy_cache).unwrap();
+
+    let loaded = conversations::load::load_conversation(
+        &export_item,
+        "conv-1",
+        fixture.cache_dir.path(),
+        0,
+        2,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(loaded.messages[0].text, "Please make an image");
+    assert_eq!(loaded.messages[0].parts[0].part_type, "text");
+}
+
+#[test]
 fn conversations_load_conversation_pages_messages_and_range() {
     let fixture = make_export_fixture();
     let export_item = exports::describe_export(&fixture.good).unwrap();
@@ -235,8 +356,12 @@ fn library_index_keeps_images_and_resolves_source_states() {
     assert_eq!(linked.display_name, "renamed library.png");
     assert_eq!(linked.source_state, "linked");
     assert_eq!(linked.exists, true);
+    assert_eq!(linked.width, Some(1024));
+    assert_eq!(linked.height, Some(1536));
     assert_eq!(missing.source_state, "missing-source-chat");
     assert_eq!(missing.exists, false);
+    assert_eq!(missing.width, None);
+    assert_eq!(missing.height, None);
     assert_eq!(index.stats.total_images, 2);
 }
 
@@ -298,6 +423,18 @@ fn library_asset_protocol_accepts_only_library_urls() {
             .unwrap();
     assert_eq!(parsed.export_id, "export 1");
     assert_eq!(parsed.file_id, "file-img-1");
+    let windows_bridge = asset_protocol::parse_asset_url(
+        "http://gpt-export-asset.localhost/library/export%201/file-img-1",
+    )
+    .unwrap();
+    assert_eq!(windows_bridge.export_id, "export 1");
+    assert_eq!(windows_bridge.file_id, "file-img-1");
+    let reverted_windows_bridge = asset_protocol::parse_asset_url(
+        "gpt-export-asset://localhost/library/export%201/file-img-1",
+    )
+    .unwrap();
+    assert_eq!(reverted_windows_bridge.export_id, "export 1");
+    assert_eq!(reverted_windows_bridge.file_id, "file-img-1");
     let unicode =
         asset_protocol::parse_asset_url("gpt-export-asset://library/%C3%9Cber-export/file-img-1")
             .unwrap();
@@ -470,7 +607,7 @@ fn make_export_fixture() -> Fixture {
     );
     fs::write(
         good.join("file-img-1.dat"),
-        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+        png_header_with_dimensions(1024, 1536),
     )
     .unwrap();
     write_json(&partial.join("conversations.json"), &json!([]));
@@ -488,4 +625,31 @@ fn write_json(path: &Path, value: &serde_json::Value) {
         format!("{}\n", serde_json::to_string_pretty(value).unwrap()),
     )
     .unwrap();
+}
+
+fn png_header_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::from([0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes
+}
+
+fn legacy_conversation_cache_digest(
+    conversation_id: &str,
+    fingerprint_path: &str,
+    fingerprint_size: Option<u64>,
+    fingerprint_mtime_ms: Option<u128>,
+    fingerprint_missing: bool,
+) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(conversation_id.as_bytes());
+    hasher.update(fingerprint_path.as_bytes());
+    hasher.update(fingerprint_size.unwrap_or_default().to_le_bytes());
+    hasher.update(fingerprint_mtime_ms.unwrap_or_default().to_le_bytes());
+    hasher.update([u8::from(fingerprint_missing)]);
+    format!("{:x}", hasher.finalize())[..16].to_string()
 }

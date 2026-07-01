@@ -52,6 +52,18 @@ pub struct AssetRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct MessagePart {
+    pub part_type: String,
+    pub text: Option<String>,
+    pub file_id: Option<String>,
+    pub name: Option<String>,
+    pub mime_type: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
     pub id: String,
     pub node_id: String,
@@ -61,7 +73,10 @@ pub struct ConversationMessage {
     pub created_at: Option<String>,
     pub content_type: Option<String>,
     pub text: String,
+    #[serde(default)]
     pub asset_refs: Vec<AssetRef>,
+    #[serde(default)]
+    pub parts: Vec<MessagePart>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,6 +150,8 @@ pub struct LibraryItem {
     pub mime: String,
     pub size_bytes: u64,
     pub size_label: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub created_at: Option<String>,
     pub status: String,
     pub file_ref: String,
@@ -305,4 +322,15 @@ pub struct SaveSessionsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct OpenFolderResponse {
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveOriginalImageResponse {
+    pub file_id: String,
+    pub file_name: String,
+    pub mime_type: String,
+    pub path: Option<PathBuf>,
+    pub bytes_written: u64,
+    pub canceled: bool,
 }

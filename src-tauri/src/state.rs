@@ -16,13 +16,16 @@ use crate::library::{assets::resolve_asset, index::build_library_index};
 use crate::models::{
     CacheStatus, Conversation, ConversationIndex, ConversationStats, ConversationSummary,
     ExportItem, ExportsResponse, LibraryIndex, LibraryResponseItem, LibraryStats, PagedResponse,
-    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, SaveSessionsProgress,
-    SaveSessionsResponse, SettingsResponse, StatsResponse, UpdateSettingsResponse,
+    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, ResolvedAsset,
+    SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse, SettingsResponse,
+    StatsResponse, UpdateSettingsResponse,
 };
 use crate::paging::page_items;
 use crate::settings::{
     read_runtime_settings, resolve_source_root, write_runtime_settings, RuntimeSettings,
 };
+
+const CACHE_META_VERSION: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -61,6 +64,12 @@ pub struct AssetPayload {
     pub file_name: String,
     pub mime_type: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OriginalImageMetadata {
+    pub file_name: String,
+    pub mime_type: String,
 }
 
 impl AppState {
@@ -295,9 +304,8 @@ impl AppState {
 
     pub fn read_asset_payload(&self, export_id: &str, file_id: &str) -> AppResult<AssetPayload> {
         let mut inner = self.lock()?;
-        let export = requested_export(&inner, Some(export_id.to_string()))?;
-        let indexed = ensure_index_locked(&mut inner, &export.id, false)?;
-        let resolved = resolve_asset(&export, file_id, &indexed.library_index.items)?;
+        let (_export, resolved) =
+            resolve_asset_for_export_locked(&mut inner, Some(export_id.to_string()), file_id)?;
         drop(inner);
 
         let bytes = std::fs::read(&resolved.file_path)
@@ -306,6 +314,48 @@ impl AppState {
             file_name: resolved.file_name,
             mime_type: resolved.mime_type,
             bytes,
+        })
+    }
+
+    pub fn original_image_metadata(
+        &self,
+        export_id: Option<String>,
+        file_id: &str,
+    ) -> AppResult<OriginalImageMetadata> {
+        let mut inner = self.lock()?;
+        let (_export, resolved) = resolve_asset_for_export_locked(&mut inner, export_id, file_id)?;
+        Ok(OriginalImageMetadata {
+            file_name: resolved.file_name,
+            mime_type: resolved.mime_type,
+        })
+    }
+
+    pub fn save_original_image_to_path(
+        &self,
+        export_id: Option<String>,
+        file_id: String,
+        destination_path: PathBuf,
+    ) -> AppResult<SaveOriginalImageResponse> {
+        let mut inner = self.lock()?;
+        let (_export, resolved) = resolve_asset_for_export_locked(&mut inner, export_id, &file_id)?;
+        drop(inner);
+
+        if let Some(parent) = destination_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
+        }
+        let bytes_written = std::fs::copy(&resolved.file_path, &destination_path)
+            .map_err(|error| io_error(&destination_path, error))?;
+
+        Ok(SaveOriginalImageResponse {
+            file_id: resolved.file_id,
+            file_name: resolved.file_name,
+            mime_type: resolved.mime_type,
+            path: Some(destination_path),
+            bytes_written,
+            canceled: false,
         })
     }
 
@@ -339,6 +389,17 @@ fn requested_export(inner: &StateInner, export_id: Option<String>) -> AppResult<
         .ok_or(AppError::ExportNotFound)
 }
 
+fn resolve_asset_for_export_locked(
+    inner: &mut StateInner,
+    export_id: Option<String>,
+    file_id: &str,
+) -> AppResult<(ExportItem, ResolvedAsset)> {
+    let export = requested_export(inner, export_id)?;
+    let indexed = ensure_index_locked(inner, &export.id, false)?;
+    let resolved = resolve_asset(&export, file_id, &indexed.library_index.items)?;
+    Ok((export, resolved))
+}
+
 fn ensure_index_locked(
     inner: &mut StateInner,
     export_id: &str,
@@ -365,7 +426,10 @@ fn index_export(export: &ExportItem, cache_dir: &Path, force: bool) -> AppResult
 
     if !force {
         if let Some(meta) = read_json::<CacheMeta>(&meta_file)? {
-            if meta.version == 1 && meta.export_id == export.id && meta.fingerprint == fingerprint {
+            if meta.version == CACHE_META_VERSION
+                && meta.export_id == export.id
+                && meta.fingerprint == fingerprint
+            {
                 let conversation_index = read_json::<ConversationIndex>(&conversations_file)?;
                 let library_index = read_json::<LibraryIndex>(&library_file)?;
                 if let (Some(conversation_index), Some(library_index)) =
@@ -396,7 +460,7 @@ fn index_export(export: &ExportItem, cache_dir: &Path, force: bool) -> AppResult
     write_json_atomic(
         &meta_file,
         &CacheMeta {
-            version: 1,
+            version: CACHE_META_VERSION,
             export_id: export.id.clone(),
             export_path: export.path.clone(),
             generated_at: crate::time::generated_at(),
@@ -502,7 +566,7 @@ fn normalized_search_text(value: &str) -> String {
 
 fn asset_url(export_id: &str, file_id: &str) -> String {
     format!(
-        "gpt-export-asset://library/{}/{}",
+        "http://gpt-export-asset.localhost/library/{}/{}",
         percent_encoding::utf8_percent_encode(export_id, percent_encoding::NON_ALPHANUMERIC),
         percent_encoding::utf8_percent_encode(file_id, percent_encoding::NON_ALPHANUMERIC)
     )

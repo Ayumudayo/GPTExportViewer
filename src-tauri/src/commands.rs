@@ -1,12 +1,14 @@
 use std::path::Path;
 
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_dialog::DialogExt;
 
-use crate::errors::{io_error, AppResult};
+use crate::errors::{io_error, AppError, AppResult};
 use crate::models::{
     Conversation, ConversationStats, ConversationSummary, ExportsResponse, LibraryResponseItem,
-    LibraryStats, OpenFolderResponse, PagedResponse, RefreshIndexResponse, SaveSessionsResponse,
-    SettingsResponse, StatsResponse, UpdateSettingsResponse,
+    LibraryStats, OpenFolderResponse, PagedResponse, RefreshIndexResponse,
+    SaveOriginalImageResponse, SaveSessionsResponse, SettingsResponse, StatsResponse,
+    UpdateSettingsResponse,
 };
 use crate::state::AppState;
 
@@ -99,6 +101,61 @@ pub fn open_saved_sessions_folder(
     let path = state.saved_sessions_dir_for_export(export_id)?;
     open_folder(&path)?;
     Ok(OpenFolderResponse { path })
+}
+
+#[tauri::command]
+pub async fn save_original_image(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    export_id: Option<String>,
+    file_id: String,
+) -> AppResult<SaveOriginalImageResponse> {
+    let metadata = state.original_image_metadata(export_id.clone(), &file_id)?;
+    let selected_path = app
+        .dialog()
+        .file()
+        .set_title("Save original image")
+        .set_file_name(save_dialog_file_name(&metadata.file_name))
+        .add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif"],
+        )
+        .blocking_save_file();
+
+    let Some(selected_path) = selected_path else {
+        return Ok(SaveOriginalImageResponse {
+            file_id,
+            file_name: metadata.file_name,
+            mime_type: metadata.mime_type,
+            path: None,
+            bytes_written: 0,
+            canceled: true,
+        });
+    };
+
+    let destination_path = selected_path
+        .into_path()
+        .map_err(|error| AppError::InvalidSourceRoot(format!("Invalid save path: {error}")))?;
+    state.save_original_image_to_path(export_id, file_id, destination_path)
+}
+
+fn save_dialog_file_name(value: &str) -> String {
+    let sanitized: String = value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "image".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[cfg(windows)]

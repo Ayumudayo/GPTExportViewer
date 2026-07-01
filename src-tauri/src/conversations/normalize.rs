@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
-use crate::models::{AssetRef, Conversation, ConversationMessage};
+use crate::models::{AssetRef, Conversation, ConversationMessage, MessagePart};
 use crate::time::to_iso_time;
 
 pub fn normalize_conversation(conversation: &Value) -> crate::errors::AppResult<Conversation> {
@@ -83,17 +83,42 @@ pub fn extract_message_text(content: &Value) -> String {
 }
 
 pub fn extract_asset_refs_from_pair(content: &Value, metadata: &Value) -> Vec<AssetRef> {
+    let attachment_index = attachment_index(metadata);
     let mut wrapper = Map::new();
     wrapper.insert("content".to_string(), content.clone());
     wrapper.insert("metadata".to_string(), metadata.clone());
-    extract_asset_refs(&Value::Object(wrapper))
+    extract_asset_refs_with_metadata(&Value::Object(wrapper), &attachment_index)
 }
 
 pub fn extract_asset_refs(value: &Value) -> Vec<AssetRef> {
+    extract_asset_refs_with_metadata(value, &HashMap::new())
+}
+
+fn extract_asset_refs_with_metadata(
+    value: &Value,
+    attachment_index: &HashMap<String, AssetMetadata>,
+) -> Vec<AssetRef> {
     let mut refs = Vec::new();
     let mut seen = HashSet::new();
-    scan_asset_refs(value, &mut refs, &mut seen);
+    scan_asset_refs(value, attachment_index, &mut refs, &mut seen);
     refs
+}
+
+pub fn extract_message_parts_from_pair(content: &Value, metadata: &Value) -> Vec<MessagePart> {
+    let attachment_index = attachment_index(metadata);
+    if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+        return parts
+            .iter()
+            .filter_map(|part| part_to_message_part(part, &attachment_index))
+            .collect();
+    }
+
+    let text = extract_message_text(content);
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text_message_part(text)]
+    }
 }
 
 fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage> {
@@ -104,7 +129,9 @@ fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage>
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let text = extract_message_text(&message["content"]);
+    let content = &message["content"];
+    let metadata = &message["metadata"];
+    let text = extract_message_text(content);
     Some(ConversationMessage {
         id: message
             .get("id")
@@ -131,7 +158,8 @@ fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage>
             .and_then(Value::as_str)
             .map(str::to_string),
         text,
-        asset_refs: extract_asset_refs_from_pair(&message["content"], &message["metadata"]),
+        asset_refs: extract_asset_refs_from_pair(content, metadata),
+        parts: extract_message_parts_from_pair(content, metadata),
     })
 }
 
@@ -316,26 +344,105 @@ fn part_to_text(part: &Value) -> String {
     String::new()
 }
 
-fn scan_asset_refs(value: &Value, refs: &mut Vec<AssetRef>, seen: &mut HashSet<String>) {
+#[derive(Clone, Default)]
+struct AssetMetadata {
+    name: Option<String>,
+    mime_type: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+fn text_message_part(text: String) -> MessagePart {
+    MessagePart {
+        part_type: "text".to_string(),
+        text: Some(text),
+        file_id: None,
+        name: None,
+        mime_type: None,
+        width: None,
+        height: None,
+    }
+}
+
+fn part_to_message_part(
+    part: &Value,
+    attachment_index: &HashMap<String, AssetMetadata>,
+) -> Option<MessagePart> {
+    if let Some(object) = part.as_object() {
+        if is_asset_like_object(object) {
+            if let Some(asset) = asset_ref_from_object(object, attachment_index) {
+                let metadata = attachment_index.get(&asset.file_id);
+                let mime_type = asset.mime_type.clone();
+                let part_type = if is_image_part(object, mime_type.as_deref()) {
+                    "image"
+                } else {
+                    "file"
+                };
+                return Some(MessagePart {
+                    part_type: part_type.to_string(),
+                    text: None,
+                    file_id: Some(asset.file_id.clone()),
+                    name: asset.name,
+                    mime_type,
+                    width: numeric_u32_field(object, &["width"])
+                        .or_else(|| metadata.and_then(|item| item.width)),
+                    height: numeric_u32_field(object, &["height"])
+                        .or_else(|| metadata.and_then(|item| item.height)),
+                });
+            }
+        }
+    }
+
+    let text = part_to_text(part);
+    (!text.is_empty()).then(|| text_message_part(text))
+}
+
+fn attachment_index(metadata: &Value) -> HashMap<String, AssetMetadata> {
+    let mut index = HashMap::new();
+    let Some(attachments) = metadata.get("attachments").and_then(Value::as_array) else {
+        return index;
+    };
+    for attachment in attachments {
+        let Some(object) = attachment.as_object() else {
+            continue;
+        };
+        let Some(file_id) = file_id_from_object(object) else {
+            continue;
+        };
+        index.insert(
+            file_id,
+            AssetMetadata {
+                name: string_field(object, &["name", "file_name", "filename"]),
+                mime_type: string_field(object, &["mime_type", "mimeType"]),
+                width: numeric_u32_field(object, &["width"]),
+                height: numeric_u32_field(object, &["height"]),
+            },
+        );
+    }
+    index
+}
+
+fn scan_asset_refs(
+    value: &Value,
+    attachment_index: &HashMap<String, AssetMetadata>,
+    refs: &mut Vec<AssetRef>,
+    seen: &mut HashSet<String>,
+) {
     match value {
         Value::Array(items) => {
             for item in items {
-                scan_asset_refs(item, refs, seen);
+                scan_asset_refs(item, attachment_index, refs, seen);
             }
         }
         Value::Object(object) => {
-            if object.contains_key("file_id")
-                || object.contains_key("fileId")
-                || object.contains_key("asset_pointer")
-                || object.contains_key("assetPointer")
-            {
-                add_asset_ref(object, refs, seen);
+            if is_asset_like_object(object) {
+                add_asset_ref(object, attachment_index, refs, seen);
             }
             for (key, child) in object {
                 if matches!(key.as_str(), "text" | "prompt" | "title") {
                     continue;
                 }
-                scan_asset_refs(child, refs, seen);
+                scan_asset_refs(child, attachment_index, refs, seen);
             }
         }
         _ => {}
@@ -344,32 +451,77 @@ fn scan_asset_refs(value: &Value, refs: &mut Vec<AssetRef>, seen: &mut HashSet<S
 
 fn add_asset_ref(
     object: &Map<String, Value>,
+    attachment_index: &HashMap<String, AssetMetadata>,
     refs: &mut Vec<AssetRef>,
     seen: &mut HashSet<String>,
 ) {
-    let file_id = ["file_id", "fileId", "id", "asset_pointer", "assetPointer"]
-        .iter()
-        .find_map(|key| object.get(*key).and_then(Value::as_str))
-        .and_then(normalize_file_id);
-    let Some(file_id) = file_id else {
+    let Some(asset) = asset_ref_from_object(object, attachment_index) else {
         return;
     };
-    let name = ["name", "file_name", "filename"]
-        .iter()
-        .find_map(|key| object.get(*key).and_then(Value::as_str))
-        .map(str::to_string);
-    let key = format!("{}:{}", file_id, name.clone().unwrap_or_default());
-    if !seen.insert(key) {
+    if !seen.insert(asset.file_id.clone()) {
         return;
     }
-    refs.push(AssetRef {
+    refs.push(asset);
+}
+
+fn asset_ref_from_object(
+    object: &Map<String, Value>,
+    attachment_index: &HashMap<String, AssetMetadata>,
+) -> Option<AssetRef> {
+    let file_id = file_id_from_object(object)?;
+    let metadata = attachment_index.get(&file_id);
+    Some(AssetRef {
         file_id,
-        name,
-        mime_type: ["mime_type", "mimeType"]
-            .iter()
-            .find_map(|key| object.get(*key).and_then(Value::as_str))
-            .map(str::to_string),
-    });
+        name: string_field(object, &["name", "file_name", "filename"])
+            .or_else(|| metadata.and_then(|item| item.name.clone())),
+        mime_type: string_field(object, &["mime_type", "mimeType"])
+            .or_else(|| metadata.and_then(|item| item.mime_type.clone())),
+    })
+}
+
+fn file_id_from_object(object: &Map<String, Value>) -> Option<String> {
+    ["file_id", "fileId", "id", "asset_pointer", "assetPointer"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .and_then(normalize_file_id)
+}
+
+fn is_asset_like_object(object: &Map<String, Value>) -> bool {
+    object.contains_key("file_id")
+        || object.contains_key("fileId")
+        || object.contains_key("asset_pointer")
+        || object.contains_key("assetPointer")
+        || (object.contains_key("id")
+            && (object.contains_key("mime_type")
+                || object.contains_key("mimeType")
+                || object.contains_key("library_file_id")
+                || object.contains_key("source")
+                || (object.contains_key("width") && object.contains_key("height"))))
+}
+
+fn is_image_part(object: &Map<String, Value>, mime_type: Option<&str>) -> bool {
+    object
+        .get("content_type")
+        .and_then(Value::as_str)
+        .is_some_and(|content_type| content_type.contains("image"))
+        || mime_type.is_some_and(|mime| mime.starts_with("image/"))
+}
+
+fn string_field(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| match value {
+            Value::String(text) if !text.is_empty() => Some(text.clone()),
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+}
+
+fn numeric_u32_field(object: &Map<String, Value>, keys: &[&str]) -> Option<u32> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
 }
 
 fn normalize_file_id(value: &str) -> Option<String> {

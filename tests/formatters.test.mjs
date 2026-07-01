@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { formatExportLabel } from "../src/data/formatters.js";
+import { formatChatTimestamp, formatExportLabel } from "../src/data/formatters.js";
 
 assert.equal(
   formatExportLabel({
@@ -23,6 +23,12 @@ assert.equal(
     modifiedAt: "2026-06-10T12:34:56.000Z"
   }),
   "2026-06-10 12:34:56"
+);
+
+assert.match(
+  formatChatTimestamp("2026-06-09T10:00:20.000Z"),
+  /2026/,
+  "Chat timestamps should include the four-digit year"
 );
 
 console.log("formatter tests passed");

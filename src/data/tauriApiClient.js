@@ -8,7 +8,8 @@ const COMMANDS = {
   fetchLibrary: "get_library",
   refreshIndex: "refresh_index",
   saveSessions: "save_sessions",
-  openSavedSessionsFolder: "open_saved_sessions_folder"
+  openSavedSessionsFolder: "open_saved_sessions_folder",
+  saveOriginalImage: "save_original_image"
 };
 
 const SESSION_EXPORT_PROGRESS_EVENT = "session-export-progress";
@@ -92,6 +93,10 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return invoke(COMMANDS.openSavedSessionsFolder, { exportId });
     },
 
+    async saveOriginalImage({ exportId, fileId }) {
+      return invoke(COMMANDS.saveOriginalImage, { exportId, fileId });
+    },
+
     assetUrl
   };
 }
@@ -136,8 +141,12 @@ export async function openSavedSessionsFolder(...args) {
   return defaultClient().openSavedSessionsFolder(...args);
 }
 
+export async function saveOriginalImage(...args) {
+  return defaultClient().saveOriginalImage(...args);
+}
+
 export function assetUrl(exportId, fileId) {
-  return `gpt-export-asset://library/${encodeURIComponent(exportId)}/${encodeURIComponent(fileId)}`;
+  return `http://gpt-export-asset.localhost/library/${encodeURIComponent(exportId)}/${encodeURIComponent(fileId)}`;
 }
 
 function normalizePagedResponse(payload) {

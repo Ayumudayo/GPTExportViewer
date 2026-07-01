@@ -10,6 +10,8 @@ use crate::models::{Conversation, ExportItem, MessageRange};
 use super::normalize::{get_conversation_id, normalize_conversation};
 use super::summary_index::read_conversation_array;
 
+const CONVERSATION_CACHE_SCHEMA_VERSION: &[u8] = b"conversation-cache-v2";
+
 pub fn load_conversation(
     export_item: &ExportItem,
     conversation_id: &str,
@@ -68,6 +70,7 @@ fn conversation_cache_path(
 ) -> PathBuf {
     let digest = {
         let mut hasher = Sha1::new();
+        hasher.update(CONVERSATION_CACHE_SCHEMA_VERSION);
         hasher.update(conversation_id.as_bytes());
         hasher.update(fingerprint.path.to_string_lossy().as_bytes());
         hasher.update(fingerprint.size.unwrap_or_default().to_le_bytes());
