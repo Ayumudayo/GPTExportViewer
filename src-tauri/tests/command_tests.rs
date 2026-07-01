@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use gpt_export_manager_lib::models::SaveSessionsProgress;
-use gpt_export_manager_lib::state::AppState;
+use gpt_export_viewer_lib::models::SaveSessionsProgress;
+use gpt_export_viewer_lib::state::AppState;
 use serde_json::json;
 use tempfile::TempDir;
 

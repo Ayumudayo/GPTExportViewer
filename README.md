@@ -1,4 +1,4 @@
-# GPTExportManager
+# GPTExportViewer
 
 Dark-first local viewer for ChatGPT Data Export folders.
 
@@ -20,10 +20,10 @@ npm run desktop:build
 The portable artifact is:
 
 ```text
-src-tauri/target/release/GPTExportManager.exe
+src-tauri/target/release/GPTExportViewer.exe
 ```
 
-The desktop runtime requires Microsoft Edge WebView2 `110.0.1531.0` or newer. Settings and cache live in user app data, for example `%LOCALAPPDATA%\GPTExportManager`, with export indexes under the `cache` subfolder. The desktop app does not use the repo-local `.cache` directory.
+The desktop runtime requires Microsoft Edge WebView2 `110.0.1531.0` or newer. Settings and cache live in user app data, for example `%LOCALAPPDATA%\GPTExportViewer`, with export indexes under the `cache` subfolder. The desktop app does not use the repo-local `.cache` directory.
 
 ## Web Development
 

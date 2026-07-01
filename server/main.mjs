@@ -23,7 +23,7 @@ if (config.indexOnly) {
 
 const server = await createAppServer({ root: config.root, cacheDir: config.cacheDir, allowedOrigins: config.allowedOrigins });
 server.listen(config.port, config.host, () => {
-  console.log(`ChatGPT Export Viewer API listening at http://${config.host}:${config.port}`);
+  console.log(`GPTExportViewer API listening at http://${config.host}:${config.port}`);
   console.log(`Export root: ${config.root}`);
   console.log(`Cache: ${config.cacheDir}`);
 });

@@ -8,7 +8,7 @@ const tinyPng = Buffer.from(
 );
 
 export async function makeFixtureExportRoot() {
-  const root = await mkdtemp(path.join(tmpdir(), "chatgpt-export-viewer-"));
+  const root = await mkdtemp(path.join(tmpdir(), "gpt-export-viewer-"));
   const cacheDir = path.join(root, ".cache");
   const good = path.join(root, "chatgpt-export-good");
   const partial = path.join(root, "chatgpt-export-partial");

@@ -1089,7 +1089,7 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <header className="sidebar-header">
-        <h1>ChatGPT Export</h1>
+        <h1>GPTExportViewer</h1>
         <button className="icon-button" aria-label="Settings" onClick={onOpenSettings}>
           <Settings size={17} />
         </button>

@@ -21,7 +21,7 @@ pub fn run() {
         return;
     }
 
-    let app_state = match state::AppState::new("GPTExportManager", Some(default_source_root())) {
+    let app_state = match state::AppState::new("GPTExportViewer", Some(default_source_root())) {
         Ok(state) => state,
         Err(error) => {
             show_startup_error(&error.to_string());
@@ -49,7 +49,7 @@ pub fn run() {
             commands::open_saved_sessions_folder
         ])
         .run(tauri::generate_context!())
-        .expect("error while running GPTExportManager");
+        .expect("error while running GPTExportViewer");
 }
 
 fn default_source_root() -> std::path::PathBuf {
@@ -213,7 +213,7 @@ fn show_startup_error(message: &str) {
         OsStr::new(value).encode_wide().chain([0]).collect()
     }
 
-    let title = wide("GPTExportManager");
+    let title = wide("GPTExportViewer");
     let body = wide(message);
     unsafe {
         MessageBoxW(

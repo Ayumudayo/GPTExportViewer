@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gpt_export_manager_lib::{
+use gpt_export_viewer_lib::{
     asset_protocol, cache, conversations, exports, fs_guards, library, paging, settings, webview2,
 };
 use serde_json::json;
@@ -76,8 +76,8 @@ fn foundations_cache_writes_json_atomically_and_compares_fingerprints() {
 
 #[test]
 fn foundations_settings_path_uses_app_data_not_repo_cache() {
-    let data_dir = settings::app_data_dir("GPTExportManager").unwrap();
-    assert!(data_dir.ends_with("GPTExportManager"));
+    let data_dir = settings::app_data_dir("GPTExportViewer").unwrap();
+    assert!(data_dir.ends_with("GPTExportViewer"));
     assert!(!data_dir.to_string_lossy().contains(".cache"));
 }
 

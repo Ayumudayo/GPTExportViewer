@@ -29,7 +29,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
 
 export function usage() {
   return [
-    "ChatGPT Export Viewer",
+    "GPTExportViewer",
     "",
     "Options:",
     "  --root <path>       Export root directory",
