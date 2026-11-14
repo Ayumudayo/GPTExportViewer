@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use serde_json::Value;
@@ -10,7 +11,7 @@ use crate::models::{ExportItem, SaveSessionsProgress, SavedSessionItem};
 use crate::time::to_iso_time;
 
 use super::normalize::get_conversation_id;
-use super::summary_index::read_conversation_array;
+use super::summary_index::stream_conversation_values;
 
 pub fn save_original_sessions(
     export: &ExportItem,
@@ -22,24 +23,25 @@ pub fn save_original_sessions(
         return Ok(Vec::new());
     }
 
-    let conversations = read_conversation_array(&export.paths.conversations)?;
-    let by_id: HashMap<String, &Value> = conversations
-        .iter()
-        .enumerate()
-        .map(|(index, conversation)| {
-            (
-                get_conversation_id(conversation, &index.to_string()),
-                conversation,
-            )
-        })
-        .collect();
+    let needed: HashSet<&str> = conversation_ids.iter().map(String::as_str).collect();
+    let mut found_by_id: HashMap<String, Value> = HashMap::with_capacity(needed.len());
+    stream_conversation_values(&export.paths.conversations, |index, conversation| {
+        let id = get_conversation_id(&conversation, &index.to_string());
+        if needed.contains(id.as_str()) {
+            found_by_id.entry(id).or_insert(conversation);
+            if found_by_id.len() == needed.len() {
+                return Ok(ControlFlow::Break(()));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
 
     let mut requested = Vec::with_capacity(conversation_ids.len());
     for conversation_id in conversation_ids {
-        let Some(conversation) = by_id.get(conversation_id) else {
+        let Some(conversation) = found_by_id.get(conversation_id) else {
             return Err(AppError::ConversationNotFound);
         };
-        requested.push((conversation_id.clone(), (*conversation).clone()));
+        requested.push((conversation_id.clone(), conversation));
     }
 
     std::fs::create_dir_all(destination_dir).map_err(|error| io_error(destination_dir, error))?;
@@ -47,10 +49,10 @@ pub fn save_original_sessions(
     let total = requested.len();
     let mut items = Vec::with_capacity(total);
     for (index, (conversation_id, conversation)) in requested.into_iter().enumerate() {
-        let title = conversation_title(&conversation);
+        let title = conversation_title(conversation);
         let file_path =
-            destination_dir.join(file_name_for(&conversation, &title, &conversation_id));
-        write_json_atomic(&file_path, &conversation)?;
+            destination_dir.join(file_name_for(conversation, &title, &conversation_id));
+        write_json_atomic(&file_path, conversation)?;
 
         items.push(SavedSessionItem {
             conversation_id: conversation_id.clone(),

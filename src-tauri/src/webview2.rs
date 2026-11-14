@@ -53,29 +53,75 @@ fn parse_version(value: &str) -> Vec<u64> {
 
 #[cfg(windows)]
 fn installed_webview2_version() -> Option<String> {
-    const CLIENT: &str = r"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
-    let keys = [
-        format!(r"HKCU\Software\Microsoft\EdgeUpdate\Clients\{CLIENT}"),
-        format!(r"HKLM\Software\Microsoft\EdgeUpdate\Clients\{CLIENT}"),
-        format!(r"HKLM\Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{CLIENT}"),
-    ];
-    keys.iter().find_map(|key| query_runtime_version(key))
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    const SUBKEY_STANDARD: &str =
+        r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    const SUBKEY_WOW64: &str =
+        r"Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+    [
+        (HKEY_CURRENT_USER, SUBKEY_STANDARD),
+        (HKEY_LOCAL_MACHINE, SUBKEY_STANDARD),
+        (HKEY_LOCAL_MACHINE, SUBKEY_WOW64),
+    ]
+    .into_iter()
+    .find_map(|(root, subkey)| query_runtime_version(root, subkey))
 }
 
 #[cfg(windows)]
-fn query_runtime_version(key: &str) -> Option<String> {
-    let output = std::process::Command::new("reg")
-        .args(["query", key, "/v", "pv"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+fn query_runtime_version(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    subkey: &str,
+) -> Option<String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+
+    fn wide(value: &str) -> Vec<u16> {
+        OsStr::new(value).encode_wide().chain([0]).collect()
+    }
+
+    let subkey_wide = wide(subkey);
+    let value_wide = wide("pv");
+    let mut bytes_needed: u32 = 0;
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            subkey_wide.as_ptr(),
+            value_wide.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes_needed,
+        )
+    };
+    if status != ERROR_SUCCESS || bytes_needed < 2 {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        (parts.next()? == "pv").then(|| parts.last().map(str::to_string))?
-    })
+
+    let mut buffer = vec![0u16; (bytes_needed as usize).div_ceil(2)];
+    let mut buffer_bytes = (buffer.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            subkey_wide.as_ptr(),
+            value_wide.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut buffer_bytes,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+
+    let u16_len = (buffer_bytes as usize / 2).min(buffer.len());
+    let text = String::from_utf16_lossy(&buffer[..u16_len]);
+    let trimmed = text.trim_end_matches('\0').trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 #[cfg(not(windows))]

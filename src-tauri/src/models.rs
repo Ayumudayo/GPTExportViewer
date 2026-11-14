@@ -160,7 +160,6 @@ pub struct LibraryItem {
     pub source_message_id: Option<String>,
     pub source_state: String,
     pub in_chat: bool,
-    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

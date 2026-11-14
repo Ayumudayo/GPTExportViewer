@@ -129,7 +129,6 @@ pub fn build_library_index(
             source_message_id,
             source_state: source_state.to_string(),
             in_chat: linked,
-            raw: file,
         });
     }
 
@@ -143,15 +142,18 @@ pub fn build_library_index(
 
 pub fn read_library_array(file_path: &Path) -> AppResult<Vec<Value>> {
     let parsed = read_json(file_path)?;
-    if let Some(items) = parsed.as_array() {
-        return Ok(items.clone());
-    }
-    for key in ["files", "library_files", "libraryFiles"] {
-        if let Some(items) = parsed.get(key).and_then(Value::as_array) {
-            return Ok(items.clone());
+    match parsed {
+        Value::Array(items) => Ok(items),
+        Value::Object(mut map) => {
+            for key in ["files", "library_files", "libraryFiles"] {
+                if let Some(Value::Array(items)) = map.remove(key) {
+                    return Ok(items);
+                }
+            }
+            Ok(Vec::new())
         }
+        _ => Ok(Vec::new()),
     }
-    Ok(Vec::new())
 }
 
 pub fn read_name_map(file_path: &Path) -> AppResult<HashMap<String, String>> {
@@ -177,8 +179,8 @@ pub fn read_name_map(file_path: &Path) -> AppResult<HashMap<String, String>> {
 }
 
 fn read_json(file_path: &Path) -> AppResult<Value> {
-    let text = std::fs::read_to_string(file_path).map_err(|error| io_error(file_path, error))?;
-    serde_json::from_str(&text)
+    let bytes = std::fs::read(file_path).map_err(|error| io_error(file_path, error))?;
+    serde_json::from_slice(&bytes)
         .map_err(|error| AppError::ParseFailed(format!("{}: {error}", file_path.display())))
 }
 

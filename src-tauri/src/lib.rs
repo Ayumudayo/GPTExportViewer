@@ -5,15 +5,17 @@ pub mod conversations;
 pub mod errors;
 pub mod exports;
 pub mod fs_guards;
+pub mod index_store;
 pub mod library;
 pub mod models;
 pub mod paging;
+pub mod search;
 pub mod settings;
 pub mod state;
 pub mod time;
 pub mod webview2;
 
-use unicode_normalization::UnicodeNormalization;
+use tauri::Manager;
 
 pub fn run() {
     if let Err(error) = webview2::preflight_webview2_runtime() {
@@ -29,12 +31,36 @@ pub fn run() {
         }
     };
     let protocol_state = app_state.clone();
+    let setup_state = app_state.clone();
 
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(settings_res) = setup_state.get_settings_response() {
+                    if let Some(saved) = settings_res.settings.window_size {
+                        let (mut width, mut height) = (saved.width, saved.height);
+                        if let Ok(Some(monitor)) = window.current_monitor() {
+                            let monitor_size = monitor.size();
+                            let scale = monitor.scale_factor();
+                            let min_w = (980.0 * scale).round() as u32;
+                            let min_h = (620.0 * scale).round() as u32;
+                            width = width.clamp(min_w.min(monitor_size.width), monitor_size.width);
+                            height =
+                                height.clamp(min_h.min(monitor_size.height), monitor_size.height);
+                        } else {
+                            width = width.max(980);
+                            height = height.max(620);
+                        }
+                        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+                    }
+                }
+            }
+            Ok(())
+        })
         .register_uri_scheme_protocol("gpt-export-asset", move |_ctx, request| {
-            asset_response(&protocol_state, request.uri().to_string())
+            asset_protocol::asset_response(&protocol_state, request.uri().to_string())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_exports,
@@ -53,153 +79,6 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTExportViewer");
-}
-
-fn asset_response(state: &state::AppState, uri: String) -> tauri::http::Response<Vec<u8>> {
-    match asset_protocol::parse_asset_url(&uri)
-        .and_then(|parsed| state.read_asset_payload(&parsed.export_id, &parsed.file_id))
-    {
-        Ok(asset) => tauri::http::Response::builder()
-            .status(tauri::http::StatusCode::OK)
-            .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)
-            .header(
-                tauri::http::header::CONTENT_LENGTH,
-                asset.bytes.len().to_string(),
-            )
-            .header(
-                tauri::http::header::CONTENT_DISPOSITION,
-                content_disposition_header(&asset.file_name),
-            )
-            .header("x-content-type-options", "nosniff")
-            .header(tauri::http::header::CACHE_CONTROL, "private, max-age=3600")
-            .body(asset.bytes)
-            .expect("valid asset response"),
-        Err(error) => {
-            let status = match error {
-                errors::AppError::InvalidFileId | errors::AppError::PathEscapesRoot => {
-                    tauri::http::StatusCode::BAD_REQUEST
-                }
-                errors::AppError::ExportNotFound | errors::AppError::AssetNotFound => {
-                    tauri::http::StatusCode::NOT_FOUND
-                }
-                _ => tauri::http::StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            tauri::http::Response::builder()
-                .status(status)
-                .header(
-                    tauri::http::header::CONTENT_TYPE,
-                    "text/plain; charset=utf-8",
-                )
-                .header("x-content-type-options", "nosniff")
-                .body(status_text(status).as_bytes().to_vec())
-                .expect("valid error response")
-        }
-    }
-}
-
-fn status_text(status: tauri::http::StatusCode) -> &'static str {
-    match status {
-        tauri::http::StatusCode::BAD_REQUEST => "invalid asset request",
-        tauri::http::StatusCode::NOT_FOUND => "asset not found",
-        _ => "asset unavailable",
-    }
-}
-
-fn header_filename(value: &str) -> String {
-    let filename: String = normalized_header_value(value)
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_graphic()
-                && !matches!(
-                    ch,
-                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | ';'
-                )
-            {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if filename.is_empty() {
-        "download".to_string()
-    } else {
-        filename
-    }
-}
-
-fn content_disposition_header(value: &str) -> String {
-    format!(
-        "inline; filename=\"{}\"; filename*=UTF-8''{}",
-        header_filename(value),
-        rfc5987_filename(value)
-    )
-}
-
-fn rfc5987_filename(value: &str) -> String {
-    let mut encoded = String::new();
-    let normalized = normalized_header_value(value);
-    for byte in normalized.as_bytes() {
-        if is_rfc5987_attr_char(*byte) {
-            encoded.push(*byte as char);
-        } else {
-            const HEX: &[u8; 16] = b"0123456789ABCDEF";
-            encoded.push('%');
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-    }
-    if encoded.is_empty() {
-        "download".to_string()
-    } else {
-        encoded
-    }
-}
-
-fn normalized_header_value(value: &str) -> String {
-    value.trim().nfc().collect()
-}
-
-fn is_rfc5987_attr_char(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'a'..=b'z'
-            | b'A'..=b'Z'
-            | b'0'..=b'9'
-            | b'!'
-            | b'#'
-            | b'$'
-            | b'&'
-            | b'+'
-            | b'-'
-            | b'.'
-            | b'^'
-            | b'_'
-            | b'`'
-            | b'|'
-            | b'~'
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::content_disposition_header;
-
-    #[test]
-    fn content_disposition_encodes_unicode_filename_parameter() {
-        let header = content_disposition_header("한글 이미지.png");
-        assert!(header.contains("filename=\"______.png\""));
-        assert!(header
-            .contains("filename*=UTF-8''%ED%95%9C%EA%B8%80%20%EC%9D%B4%EB%AF%B8%EC%A7%80.png"));
-    }
-
-    #[test]
-    fn content_disposition_uses_windows_safe_ascii_fallback() {
-        assert_eq!(
-            content_disposition_header("a:b?.png"),
-            "inline; filename=\"a_b_.png\"; filename*=UTF-8''a%3Ab%3F.png"
-        );
-    }
 }
 
 #[cfg(windows)]

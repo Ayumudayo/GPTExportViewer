@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { copyMessageText, computeMeasuredVirtualRange } from "../src/chatReaderHelpers.js";
+import {
+  buildMeasuredOffsets,
+  computeMeasuredVirtualRange,
+  computeVirtualRangeFromOffsets,
+  copyMessageText
+} from "../src/chatReaderHelpers.js";
 
 {
   const copied = [];
@@ -71,6 +76,28 @@ import { copyMessageText, computeMeasuredVirtualRange } from "../src/chatReaderH
       totalSize: 452
     },
     "Measured virtual ranges should fall back to estimated heights for unseen rows while preserving scroll geometry"
+  );
+}
+
+{
+  const offsets = buildMeasuredOffsets(["m1", "m2", "m3"], { m2: 150.2 }, 80);
+  assert.deepEqual(
+    offsets,
+    [0, 80, 231, 311],
+    "buildMeasuredOffsets should ceil measured heights and fall back to estimatedItemSize for unmeasured rows"
+  );
+
+  const rangeFromOffsets = computeVirtualRangeFromOffsets(offsets, 90, 140, 0, 80);
+  assert.deepEqual(
+    rangeFromOffsets,
+    {
+      startIndex: 1,
+      endIndex: 2,
+      beforeSize: 80,
+      afterSize: 80,
+      totalSize: 311
+    },
+    "computeVirtualRangeFromOffsets should compute visible range directly from precomputed offsets"
   );
 }
 

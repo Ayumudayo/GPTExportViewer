@@ -11,6 +11,7 @@ export {
   rescanExports,
   saveOriginalImage,
   saveSessions,
+  thumbUrl,
   updatePreferences,
   updateSettings
 } from "./tauriApiClient.js";

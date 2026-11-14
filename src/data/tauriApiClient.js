@@ -44,7 +44,7 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return invoke(COMMANDS.rescanExports);
     },
 
-    async updatePreferences({ selectedExportId, windowSize } = {}) {
+    async updatePreferences({ selectedExportId = undefined, windowSize = undefined } = {}) {
       return invoke(COMMANDS.updatePreferences, { selectedExportId, windowSize });
     },
 
@@ -64,7 +64,7 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return normalizePagedResponse(await invoke(COMMANDS.fetchLibrary, { exportId, query, filter, ...paginationArgs(cursor, limit) }));
     },
 
-    async refreshIndex({ exportId } = {}) {
+    async refreshIndex({ exportId = undefined } = {}) {
       return invoke(COMMANDS.refreshIndex, { exportId });
     },
 
@@ -107,16 +107,17 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return invoke(COMMANDS.saveOriginalImage, { exportId, fileId });
     },
 
-    assetUrl
+    assetUrl,
+    thumbUrl
   };
 }
 
-export async function fetchExports(...args) {
-  return defaultClient().fetchExports(...args);
+export async function fetchExports() {
+  return defaultClient().fetchExports();
 }
 
-export async function fetchSettings(...args) {
-  return defaultClient().fetchSettings(...args);
+export async function fetchSettings() {
+  return defaultClient().fetchSettings();
 }
 
 export async function pickSourceFolder(...args) {
@@ -127,8 +128,8 @@ export async function updateSettings(...args) {
   return defaultClient().updateSettings(...args);
 }
 
-export async function rescanExports(...args) {
-  return defaultClient().rescanExports(...args);
+export async function rescanExports() {
+  return defaultClient().rescanExports();
 }
 
 export async function updatePreferences(...args) {
@@ -165,6 +166,10 @@ export async function saveOriginalImage(...args) {
 
 export function assetUrl(exportId, fileId) {
   return `http://gpt-export-asset.localhost/library/${encodeURIComponent(exportId)}/${encodeURIComponent(fileId)}`;
+}
+
+export function thumbUrl(exportId, fileId) {
+  return `${assetUrl(exportId, fileId)}?thumb=1`;
 }
 
 function normalizePagedResponse(payload) {

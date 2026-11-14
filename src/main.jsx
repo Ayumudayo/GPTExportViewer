@@ -1,324 +1,159 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
+import { AlertTriangle, Check, X } from "lucide-react";
 import {
-  AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
-  ChevronDown,
-  Clock3,
-  Copy,
-  Database,
-  ExternalLink,
-  FileDown,
-  FileImage,
-  FolderOpen,
-  HardDrive,
-  Images,
-  Info,
-  MessageSquare,
-  Paperclip,
-  RefreshCcw,
-  Search,
-  Settings,
-  Sparkles,
-  Star,
-  Tag,
-  X,
-  ZoomIn
-} from "lucide-react";
-import {
-  assetUrl,
   fetchConversation,
   fetchConversations,
   fetchExports,
   fetchLibrary,
   fetchSettings,
   fetchStats,
-  openSavedSessionsFolder,
-  pickSourceFolder,
   rescanExports,
   saveOriginalImage,
-  saveSessions,
   updatePreferences,
   updateSettings
 } from "./data/apiClient.js";
-import { formatChatTimestamp, formatDate, formatExportLabel, formatShortDate, roleInitial, roleLabel } from "./data/formatters.js";
-import { copyMessageText as copyMessageTextToClipboard } from "./chatReaderHelpers.js";
-import { getAdjacentIndex, getWheelDirection } from "./libraryNavigation.js";
-import { useMeasuredVirtualList, useScrollViewport } from "./measuredVirtualList.js";
-import { computeVirtualRange } from "./virtualWindow.js";
+import { getAdjacentIndex } from "./libraryNavigation.js";
+import { useDebouncedValue } from "./hooks/useDebouncedValue.js";
+import { useSessionExport } from "./hooks/useSessionExport.js";
+import { useWorkspaceChrome } from "./hooks/useWorkspaceChrome.js";
+import { applySavedWindowSize } from "./utils/desktopWindow.js";
+import { mergeByKey, pickExportId } from "./utils/selection.js";
+import { ChatReader } from "./components/ChatReader.jsx";
+import { AppErrorBoundary, ResizeHandle } from "./components/Common.jsx";
+import { ImageContextMenu, SessionContextMenu } from "./components/ContextMenus.jsx";
+import { ExportProgressDialog, OnboardingDialog, SettingsDialog } from "./components/Dialogs.jsx";
+import { ImageLightbox } from "./components/ImageLightbox.jsx";
+import { Inspector } from "./components/Inspector.jsx";
+import { LibraryReader } from "./components/LibraryReader.jsx";
+import { Sidebar } from "./components/Sidebar.jsx";
 import "./styles.css";
 
-const CONVERSATION_ROW_SIZE = 64;
-const LIBRARY_SIDE_ROW_SIZE = 68;
-const ESTIMATED_MESSAGE_ROW_SIZE = 96;
-const MESSAGE_COLLAPSE_LIMIT = 1200;
-const GALLERY_ROW_SIZE = 284;
-const GALLERY_MIN_CARD_WIDTH = 176;
-const GALLERY_GAP = 14;
-const LAYOUT_STORAGE_KEY = "chatgpt-export-layout";
-const FOCUSABLE_DIALOG_SELECTOR = [
-  'button:not([disabled])',
-  '[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])'
-].join(", ");
-const DEFAULT_LAYOUT = { sidebar: 360, inspector: 340 };
-const LAYOUT_LIMITS = {
-  sidebar: { min: 280, max: 560 },
-  inspector: { min: 280, max: 540 }
-};
-const WINDOW_PREFERENCE_SAVE_DELAY_MS = 350;
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function normalizeLayout(value = {}) {
-  return {
-    sidebar: clamp(Number(value.sidebar) || DEFAULT_LAYOUT.sidebar, LAYOUT_LIMITS.sidebar.min, LAYOUT_LIMITS.sidebar.max),
-    inspector: clamp(Number(value.inspector) || DEFAULT_LAYOUT.inspector, LAYOUT_LIMITS.inspector.min, LAYOUT_LIMITS.inspector.max)
-  };
-}
-
-function normalizeWindowSize(value) {
-  const width = Math.round(Number(value?.width));
-  const height = Math.round(Number(value?.height));
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 320 || height < 240) {
-    return null;
-  }
-  return { width, height };
-}
-
-function pickExportId(exports, preferredExportId = "") {
-  if (preferredExportId && exports.some((item) => item.id === preferredExportId)) {
-    return preferredExportId;
-  }
-  return exports[0]?.id || "";
-}
-
-async function applySavedWindowSize(windowSize) {
-  const normalized = normalizeWindowSize(windowSize);
-  if (!normalized) return;
-  try {
-    await getCurrentWindow().setSize(new PhysicalSize(normalized.width, normalized.height));
-  } catch {
-    // Browser-only development should still render even when Tauri window APIs are unavailable.
-  }
-}
-
-function formatImageResolution(image) {
-  const width = Number(image?.width);
-  const height = Number(image?.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return "Unknown resolution";
-  }
-  return `${Math.round(width)}x${Math.round(height)}`;
-}
-
-function lightboxSizeStyle(image) {
-  const width = Number(image?.width);
-  const height = Number(image?.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return {};
-  }
-  const preferredWidth = Math.max(520, Math.min(1640, Math.round(width + 168)));
-  const preferredHeight = Math.max(320, Math.min(1040, Math.round(height + 132)));
-  return {
-    "--lightbox-width": `${preferredWidth}px`,
-    "--lightbox-height": `${preferredHeight}px`,
-    "--lightbox-aspect": `${Math.round(width)} / ${Math.round(height)}`
-  };
-}
-
-function readSavedLayout() {
-  try {
-    return normalizeLayout(JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) ?? "{}"));
-  } catch {
-    return DEFAULT_LAYOUT;
-  }
-}
-
-function useVirtualList(items, { itemSize, overscan = 8, resetKey = "" }) {
-  const { containerRef, viewport } = useScrollViewport(resetKey);
-  const range = computeVirtualRange({
-    itemCount: items.length,
-    scrollOffset: viewport.scrollOffset,
-    viewportSize: viewport.viewportSize,
-    itemSize,
-    overscan
-  });
-
-  return {
-    containerRef,
-    beforeSize: range.beforeSize,
-    afterSize: range.afterSize,
-    items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset }))
-  };
-}
-
-function useVirtualGrid(items, { estimatedRowSize = GALLERY_ROW_SIZE, minCardWidth = GALLERY_MIN_CARD_WIDTH, gap = GALLERY_GAP, overscan = 3, resetKey = "" } = {}) {
-  const { containerRef, viewport } = useScrollViewport(resetKey);
-  const gridRef = useRef(null);
-  const [gridMetrics, setGridMetrics] = useState({ columns: 1, rowSize: estimatedRowSize });
-
-  const measureGrid = useCallback(() => {
-    const grid = gridRef.current;
-    if (!grid) return;
-    const styles = window.getComputedStyle(grid);
-    const templateColumns = styles.gridTemplateColumns.split(" ").filter(Boolean);
-    const firstCard = grid.querySelector(".image-card");
-    const measuredGap = Number.parseFloat(styles.rowGap) || gap;
-    const columns = Math.max(1, templateColumns.length || Math.floor((viewport.width + gap) / (minCardWidth + gap)));
-    const rowSize = Math.max(1, Math.round((firstCard?.getBoundingClientRect().height || estimatedRowSize - measuredGap) + measuredGap));
-    setGridMetrics((current) => (current.columns === columns && current.rowSize === rowSize ? current : { columns, rowSize }));
-  }, [estimatedRowSize, gap, minCardWidth, viewport.width]);
-
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) return;
-    const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(measureGrid) : null;
-    measureGrid();
-    resizeObserver?.observe(grid);
-    window.addEventListener("resize", measureGrid);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", measureGrid);
-    };
-  }, [measureGrid]);
-
-  const rowCount = Math.ceil(items.length / gridMetrics.columns);
-  const range = computeVirtualRange({
-    itemCount: rowCount,
-    scrollOffset: viewport.scrollOffset,
-    viewportSize: viewport.viewportSize,
-    itemSize: gridMetrics.rowSize,
-    overscan
-  });
-  const startIndex = range.startIndex * gridMetrics.columns;
-  const endIndex = Math.min(items.length, range.endIndex * gridMetrics.columns);
-
-  return {
-    containerRef,
-    gridRef,
-    beforeSize: range.beforeSize,
-    afterSize: range.afterSize,
-    columns: gridMetrics.columns,
-    items: items.slice(startIndex, endIndex).map((item, offset) => ({ item, index: startIndex + offset }))
-  };
-}
-
-function VirtualSpacer({ size }) {
-  if (!size) return null;
-  return <div className="virtual-spacer" style={{ height: size }} aria-hidden="true" />;
-}
-
-function toggleSelection(current, id) {
-  return current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id];
-}
-
-function selectConversationRange(conversations, anchorId, targetId) {
-  const targetIndex = conversations.findIndex((item) => item.id === targetId);
-  const anchorIndex = conversations.findIndex((item) => item.id === anchorId);
-  if (targetIndex < 0) return [];
-  if (anchorIndex < 0) return [targetId];
-  const startIndex = Math.min(anchorIndex, targetIndex);
-  const endIndex = Math.max(anchorIndex, targetIndex);
-  return conversations.slice(startIndex, endIndex + 1).map((item) => item.id);
-}
-
-function reconcileConversationSelection(conversations, selectedConversationIds, lastSelectedConversationId) {
-  const availableIds = new Set(conversations.map((item) => item.id));
-  return {
-    selectedConversationIds: selectedConversationIds.filter((id) => availableIds.has(id)),
-    lastSelectedConversationId: availableIds.has(lastSelectedConversationId) ? lastSelectedConversationId : ""
-  };
-}
-
-function getNextDialogFocusIndex(currentIndex, focusableCount, isShiftKey) {
-  if (focusableCount <= 0) return -1;
-  if (currentIndex < 0) return isShiftKey ? focusableCount - 1 : 0;
-  if (isShiftKey) return currentIndex <= 0 ? focusableCount - 1 : currentIndex - 1;
-  return currentIndex >= focusableCount - 1 ? 0 : currentIndex + 1;
-}
-
-function useAutoLoadMore({ hasMore, isLoading, onLoadMore }) {
-  const sentinelRef = useRef(null);
-  const onLoadMoreRef = useRef(onLoadMore);
-
-  useEffect(() => {
-    onLoadMoreRef.current = onLoadMore;
-  }, [onLoadMore]);
-
-  useEffect(() => {
-    const node = sentinelRef.current;
-    if (!node || !hasMore) return;
-
-    if (typeof IntersectionObserver === "undefined") {
-      if (!isLoading) onLoadMoreRef.current();
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!isLoading && entries.some((entry) => entry.isIntersecting)) {
-          onLoadMoreRef.current();
-        }
-      },
-      { root: null, rootMargin: "240px 0px", threshold: 0.01 }
-    );
-
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [hasMore, isLoading]);
-
-  return sentinelRef;
-}
-
+/**
+ * Root application coordinator managing export loading, pagination, reader modes, and modal state.
+ */
 function App() {
   const [mode, setMode] = useState(new URLSearchParams(window.location.search).get("view") === "library" ? "library" : "chat");
-  const [settings, setSettings] = useState(null);
+  const [settings, setSettings] = useState(/** @type {any} */ (null));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState("");
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [sourceVersion, setSourceVersion] = useState(0);
-  const [layoutSizes, setLayoutSizes] = useState(readSavedLayout);
-  const [exports, setExports] = useState([]);
+  const [exports, setExports] = useState(/** @type {any[]} */ ([]));
   const [selectedExportId, setSelectedExportId] = useState("");
-  const [query, setQuery] = useState("");
+  const [chatQuery, setChatQuery] = useState("");
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const query = mode === "chat" ? chatQuery : libraryQuery;
+  const setQuery = mode === "chat" ? setChatQuery : setLibraryQuery;
+  const debouncedChatQuery = useDebouncedValue(chatQuery, 200);
+  const debouncedLibraryQuery = useDebouncedValue(libraryQuery, 200);
   const [conversationFilter, setConversationFilter] = useState("all");
   const [libraryFilter, setLibraryFilter] = useState("all");
-  const [conversations, setConversations] = useState([]);
+  const [conversations, setConversations] = useState(/** @type {any[]} */ ([]));
   const [selectedConversationId, setSelectedConversationId] = useState("");
-  const [selectedConversationIds, setSelectedConversationIds] = useState([]);
-  const [lastSelectedConversationId, setLastSelectedConversationId] = useState("");
-  const [sessionContextMenuState, setSessionContextMenu] = useState(null);
-  const sessionContextMenu = sessionContextMenuState;
-  const [sessionExportJob, setSessionExportJob] = useState(null);
-  const [conversation, setConversation] = useState(null);
-  const [library, setLibrary] = useState([]);
+  const [libraryContextMenu, setLibraryContextMenu] = useState(/** @type {any} */ (null));
+  const [conversation, setConversation] = useState(/** @type {any} */ (null));
+  const [library, setLibrary] = useState(/** @type {any[]} */ ([]));
   const [selectedImageId, setSelectedImageId] = useState("");
-  const [stats, setStats] = useState(null);
+  const [stats, setStats] = useState(/** @type {any} */ (null));
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [lightboxImage, setLightboxImage] = useState(null);
+  const [lightboxImage, setLightboxImage] = useState(/** @type {any} */ (null));
+  const [lightboxImages, setLightboxImages] = useState(/** @type {any[] | null} */ (null));
   const [busy, setBusy] = useState("Starting");
-  const [loadingMore, setLoadingMore] = useState("");
-  const loadingMoreKeyRef = useRef("");
+  const busyTasksRef = useRef(/** @type {{ token: symbol, label: string }[]} */ ([]));
+  const [loadingExports, setLoadingExports] = useState(true);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [loadingLibrary, setLoadingLibrary] = useState(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [conversationLoadErrorId, setConversationLoadErrorId] = useState("");
+  const [loadingMoreState, setLoadingMoreState] = useState({ sessions: false, library: false, messages: false });
+  const loadingMoreKeyRef = useRef({ sessions: "", library: "", messages: "" });
   const [error, setError] = useState("");
-  const [conversationPage, setConversationPage] = useState(null);
-  const [libraryPage, setLibraryPage] = useState(null);
-  const latestLoadStateRef = useRef({});
-  const windowPreferenceTimeoutRef = useRef(null);
+  const [notice, setNotice] = useState("");
+  const [sidebarImageJumpSeq, setSidebarImageJumpSeq] = useState(0);
+  const [librarySideSyncSeq, setLibrarySideSyncSeq] = useState(0);
+  const [sidebarSessionJumpSeq, setSidebarSessionJumpSeq] = useState(0);
+  const [chatJumpRequest, setChatJumpRequest] = useState(/** @type {any} */ (null));
+  const [conversationPage, setConversationPage] = useState(/** @type {any} */ (null));
+  const [libraryPage, setLibraryPage] = useState(/** @type {any} */ (null));
+  const latestLoadStateRef = useRef(/** @type {any} */ ({}));
+  const pinnedConversationIdRef = useRef("");
+  const pendingLightboxIndexRef = useRef(-1);
+
+  const {
+    layoutSizes,
+    theme,
+    toggleTheme,
+    isCompactLayout,
+    inspectorDrawerOpen,
+    setInspectorDrawerOpen,
+    isInspectorOpen,
+    toggleInspector,
+    closeInspector,
+    startResize,
+    nudgeResize
+  } = useWorkspaceChrome();
+
+  const activeConversation = conversation?.id === selectedConversationId ? conversation : null;
+  const displayedConversations = useMemo(() => {
+    if (
+      !selectedConversationId ||
+      conversations.some((item) => item.id === selectedConversationId) ||
+      activeConversation?.id !== selectedConversationId ||
+      debouncedChatQuery.trim()
+    ) {
+      return conversations;
+    }
+    const filterMatches =
+      conversationFilter === "all" ||
+      (conversationFilter === "archived" ? Boolean(activeConversation.archived) : !activeConversation.archived);
+    if (!filterMatches) return conversations;
+    const firstTextMessage = (activeConversation.messages ?? []).find((msg) => typeof msg?.text === "string" && msg.text.trim());
+    const pinnedSummary = {
+      id: activeConversation.id,
+      title: activeConversation.title ?? selectedConversationId,
+      updatedAt: activeConversation.updatedAt ?? activeConversation.createdAt ?? "",
+      createdAt: activeConversation.createdAt ?? activeConversation.updatedAt ?? "",
+      model: activeConversation.model ?? "",
+      messageCount: activeConversation.totalMessages ?? activeConversation.messages?.length ?? 0,
+      attachmentCount: 0,
+      archived: Boolean(activeConversation.archived),
+      starred: Boolean(activeConversation.starred),
+      preview: firstTextMessage ? firstTextMessage.text.trim().slice(0, 140) : ""
+    };
+    return [pinnedSummary, ...conversations];
+  }, [activeConversation, conversationFilter, conversations, debouncedChatQuery, selectedConversationId]);
+  const selectedConversationSummary = displayedConversations.find((item) => item.id === selectedConversationId);
+
+  const {
+    selectedConversationIds,
+    sessionContextMenu,
+    sessionExportJob,
+    isSessionExportRunning,
+    closeSessionContextMenu,
+    clearConversationSelection,
+    resetSessionSelection,
+    selectConversationRow,
+    openSessionContextMenu,
+    exportSelectedSessions,
+    closeExportProgressDialog,
+    openExportFolder
+  } = useSessionExport({
+    displayedConversations,
+    selectedExportId,
+    selectedConversationId,
+    setSelectedConversationId,
+    pinnedConversationIdRef,
+    setError
+  });
 
   latestLoadStateRef.current = {
     selectedExportId,
     sourceVersion,
-    query,
+    chatQuery: debouncedChatQuery,
+    libraryQuery: debouncedLibraryQuery,
     conversationFilter,
     libraryFilter,
     selectedConversationId,
@@ -327,38 +162,50 @@ function App() {
     messageNextStart: conversation?.range?.nextStart ?? null
   };
 
+  const pushBusyTask = useCallback((label) => {
+    const token = Symbol(label);
+    busyTasksRef.current = [...busyTasksRef.current, { token, label }];
+    setBusy(label);
+    return () => {
+      busyTasksRef.current = busyTasksRef.current.filter((entry) => entry.token !== token);
+      const next = busyTasksRef.current[busyTasksRef.current.length - 1];
+      setBusy(next ? next.label : "");
+    };
+  }, []);
+
   const beginLoadingMore = useCallback((status, key) => {
-    if (loadingMoreKeyRef.current) return false;
-    loadingMoreKeyRef.current = key;
-    setLoadingMore(status);
+    if (loadingMoreKeyRef.current[status]) return false;
+    loadingMoreKeyRef.current[status] = key;
+    setLoadingMoreState((current) => (current[status] ? current : { ...current, [status]: true }));
     return true;
   }, []);
 
-  const finishLoadingMore = useCallback((key) => {
-    if (loadingMoreKeyRef.current !== key) return;
-    loadingMoreKeyRef.current = "";
-    setLoadingMore("");
+  const finishLoadingMore = useCallback((status, key) => {
+    if (loadingMoreKeyRef.current[status] !== key) return;
+    loadingMoreKeyRef.current[status] = "";
+    setLoadingMoreState((current) => (current[status] ? { ...current, [status]: false } : current));
   }, []);
 
   useEffect(() => {
-    const preventNativeContextMenu = (event) => {
-      event.preventDefault();
-    };
-    window.addEventListener("contextmenu", preventNativeContextMenu, { capture: true });
-    return () => {
-      window.removeEventListener("contextmenu", preventNativeContextMenu, { capture: true });
-    };
-  }, []);
+    if (!notice) return undefined;
+    const timer = window.setTimeout(() => setNotice(""), 2400);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     let ignore = false;
-    setBusy("Loading exports");
+    setLoadingExports(true);
+    const doneBusy = pushBusyTask("Loading exports");
     Promise.all([fetchSettings(), fetchExports()])
       .then(([settingsPayload, exportPayload]) => {
         if (ignore) return;
         const nextSettings = settingsPayload.settings ?? null;
         const nextExports = exportPayload.exports ?? [];
         const nextSelectedExportId = pickExportId(nextExports, settingsPayload.settings?.selectedExportId);
+        if (nextSelectedExportId) {
+          setLoadingSessions(true);
+          setLoadingLibrary(true);
+        }
         setSettings(nextSettings);
         setSettingsDraft(settingsPayload.settings?.sourceRoot ?? "");
         setExports(nextExports);
@@ -366,149 +213,200 @@ function App() {
         setOnboardingOpen(!settingsPayload.settings?.sourceRoot);
         void applySavedWindowSize(settingsPayload.settings?.windowSize);
       })
-      .catch((nextError) => setError(nextError.message))
-      .finally(() => !ignore && setBusy(""));
+      .catch((nextError) => {
+        if (!ignore) setError(nextError.message);
+      })
+      .finally(() => {
+        if (!ignore) setLoadingExports(false);
+        doneBusy();
+      });
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [pushBusyTask]);
 
   useEffect(() => {
-    let unlisten = null;
-
-    async function bindWindowResizePersistence() {
-      try {
-        unlisten = await getCurrentWindow().onResized(({ payload }) => {
-          const nextWindowSize = normalizeWindowSize(payload);
-          if (!nextWindowSize) return;
-          if (windowPreferenceTimeoutRef.current) {
-            window.clearTimeout(windowPreferenceTimeoutRef.current);
-          }
-          windowPreferenceTimeoutRef.current = window.setTimeout(() => {
-            void updatePreferences({ windowSize: nextWindowSize }).catch(() => {});
-          }, WINDOW_PREFERENCE_SAVE_DELAY_MS);
-        });
-      } catch {
-        // The same bundle can be inspected in a plain browser during development.
-      }
-    }
-
-    void bindWindowResizePersistence();
-    return () => {
-      if (windowPreferenceTimeoutRef.current) {
-        window.clearTimeout(windowPreferenceTimeoutRef.current);
-        windowPreferenceTimeoutRef.current = null;
-      }
-      if (unlisten) void unlisten();
-    };
-  }, []);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layoutSizes));
-    } catch {
-      // Local storage is optional; resizing should still work for this session.
-    }
-  }, [layoutSizes]);
-
-  useEffect(() => {
-    setSelectedConversationIds([]);
-    setLastSelectedConversationId("");
-    setSessionContextMenu(null);
-  }, [mode, selectedExportId, query, conversationFilter]);
-
-  useEffect(() => {
-    const reconciled = reconcileConversationSelection(conversations, selectedConversationIds, lastSelectedConversationId);
-    if (
-      reconciled.selectedConversationIds.length !== selectedConversationIds.length ||
-      reconciled.selectedConversationIds.some((id, index) => id !== selectedConversationIds[index])
-    ) {
-      setSelectedConversationIds(reconciled.selectedConversationIds);
-    }
-    if (reconciled.lastSelectedConversationId !== lastSelectedConversationId) {
-      setLastSelectedConversationId(reconciled.lastSelectedConversationId);
-    }
-    if (sessionContextMenuState && !conversations.some((item) => item.id === sessionContextMenuState.conversationId)) {
-      setSessionContextMenu(null);
-    }
-  }, [conversations, lastSelectedConversationId, selectedConversationIds, sessionContextMenuState]);
+    resetSessionSelection();
+    setLibraryContextMenu(null);
+  }, [mode, selectedExportId, debouncedChatQuery, conversationFilter, debouncedLibraryQuery, libraryFilter, resetSessionSelection]);
 
   useEffect(() => {
     if (!selectedExportId) return;
     let ignore = false;
-    setBusy("Indexing");
-    Promise.all([
-      fetchStats(selectedExportId),
-      fetchConversations({ exportId: selectedExportId, query, filter: conversationFilter, limit: 80 }),
-      fetchLibrary({ exportId: selectedExportId, query, filter: libraryFilter, limit: 120 })
-    ])
-      .then(([nextStats, conversationPayload, libraryPayload]) => {
-        if (ignore) return;
-        const nextConversations = conversationPayload.items ?? [];
-        const nextLibrary = libraryPayload.items ?? [];
-        setStats(nextStats);
-        setConversations(nextConversations);
-        setLibrary(nextLibrary);
-        setConversationPage(conversationPayload.page ?? null);
-        setLibraryPage(libraryPayload.page ?? null);
-        setSelectedConversationId((current) => (nextConversations.some((item) => item.id === current) ? current : nextConversations[0]?.id || ""));
-        setSelectedImageId((current) => (nextLibrary.some((item) => item.fileId === current) ? current : nextLibrary[0]?.fileId || ""));
+    const doneBusy = pushBusyTask("Indexing");
+    fetchStats(selectedExportId)
+      .then((nextStats) => {
+        if (!ignore) setStats(nextStats);
       })
-      .catch((nextError) => setError(nextError.message))
-      .finally(() => !ignore && setBusy(""));
+      .catch((nextError) => {
+        if (!ignore) setError(nextError.message);
+      })
+      .finally(() => {
+        doneBusy();
+      });
     return () => {
       ignore = true;
     };
-  }, [selectedExportId, query, conversationFilter, libraryFilter, sourceVersion]);
+  }, [selectedExportId, sourceVersion, pushBusyTask]);
 
   useEffect(() => {
-    if (!selectedExportId || !selectedConversationId) return;
+    if (!selectedExportId) {
+      setLoadingSessions(false);
+      return;
+    }
     let ignore = false;
-    setBusy("Loading conversation");
-    fetchConversation({ exportId: selectedExportId, conversationId: selectedConversationId, limit: 120 })
-      .then((payload) => {
-        if (!ignore) setConversation(payload);
+    setLoadingSessions(true);
+    const doneBusy = pushBusyTask("Loading sessions");
+    fetchConversations({ exportId: selectedExportId, query: debouncedChatQuery, filter: conversationFilter, limit: 80 })
+      .then((conversationPayload) => {
+        if (ignore) return;
+        const nextConversations = conversationPayload.items ?? [];
+        setConversations(nextConversations);
+        setConversationPage(conversationPayload.page ?? null);
+        setSelectedConversationId((current) => {
+          if (current && current === pinnedConversationIdRef.current) {
+            return current;
+          }
+          return nextConversations.some((item) => item.id === current) ? current : nextConversations[0]?.id || "";
+        });
+        if (nextConversations.length === 0 && !pinnedConversationIdRef.current) {
+          setConversation(null);
+        }
       })
-      .catch((nextError) => setError(nextError.message))
-      .finally(() => !ignore && setBusy(""));
+      .catch((nextError) => {
+        if (!ignore) setError(nextError.message);
+      })
+      .finally(() => {
+        if (!ignore) setLoadingSessions(false);
+        doneBusy();
+      });
     return () => {
       ignore = true;
     };
-  }, [selectedExportId, selectedConversationId, sourceVersion]);
+  }, [selectedExportId, debouncedChatQuery, conversationFilter, sourceVersion, pushBusyTask]);
 
-  const applySourcePayload = useCallback((payload, preferredExportId = "", { resetContent = true } = {}) => {
-    const nextSettings = payload.settings ?? null;
-    const nextExports = payload.exports ?? [];
-    const nextSelectedExportId = pickExportId(nextExports, preferredExportId || nextSettings?.selectedExportId);
-    setSettings(nextSettings);
-    setSettingsDraft(nextSettings?.sourceRoot ?? "");
-    setExports(nextExports);
-    setSelectedExportId(nextSelectedExportId);
-    if (resetContent) {
-      setSelectedConversationId("");
-      setSelectedConversationIds([]);
-      setLastSelectedConversationId("");
-      setSessionContextMenu(null);
-      setConversation(null);
+  useEffect(() => {
+    pendingLightboxIndexRef.current = -1;
+    if (!selectedExportId) {
+      setLoadingLibrary(false);
+      return;
+    }
+    let ignore = false;
+    setLoadingLibrary(true);
+    const doneBusy = pushBusyTask("Loading images");
+    fetchLibrary({ exportId: selectedExportId, query: debouncedLibraryQuery, filter: libraryFilter, limit: 120 })
+      .then((libraryPayload) => {
+        if (ignore) return;
+        const nextLibrary = libraryPayload.items ?? [];
+        setLibrary(nextLibrary);
+        setLibraryPage(libraryPayload.page ?? null);
+        setSelectedImageId((current) =>
+          nextLibrary.some((item) => item.fileId === current) ? current : nextLibrary[0]?.fileId || ""
+        );
+      })
+      .catch((nextError) => {
+        if (!ignore) setError(nextError.message);
+      })
+      .finally(() => {
+        if (!ignore) setLoadingLibrary(false);
+        doneBusy();
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [selectedExportId, debouncedLibraryQuery, libraryFilter, sourceVersion, pushBusyTask]);
+
+  useEffect(() => {
+    if (!selectedExportId || !selectedConversationId) {
+      setLoadingConversation(false);
+      return;
+    }
+    let ignore = false;
+    setLoadingConversation(true);
+    setConversationLoadErrorId("");
+    const doneBusy = pushBusyTask("Loading conversation");
+    fetchConversation({ exportId: selectedExportId, conversationId: selectedConversationId, limit: 120 })
+      .then((payload) => {
+        if (!ignore) {
+          setConversationLoadErrorId("");
+          setConversation(payload);
+        }
+      })
+      .catch((nextError) => {
+        if (!ignore) {
+          setConversationLoadErrorId(selectedConversationId);
+          setError(nextError.message);
+        }
+      })
+      .finally(() => {
+        if (!ignore) setLoadingConversation(false);
+        doneBusy();
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [selectedExportId, selectedConversationId, sourceVersion, pushBusyTask]);
+
+  const applySourcePayload = useCallback(
+    (payload, preferredExportId = "", { resetContent = true } = {}) => {
+      const nextSettings = payload.settings ?? null;
+      const nextExports = payload.exports ?? [];
+      const nextSelectedExportId = pickExportId(nextExports, preferredExportId || nextSettings?.selectedExportId);
+      setSettings(nextSettings);
+      setSettingsDraft(nextSettings?.sourceRoot ?? "");
+      setExports(nextExports);
+      setSelectedExportId(nextSelectedExportId);
+      if (resetContent) {
+        pinnedConversationIdRef.current = "";
+        pendingLightboxIndexRef.current = -1;
+        setSelectedConversationId("");
+        resetSessionSelection();
+        setConversation(null);
+        setConversationLoadErrorId("");
+        setConversations([]);
+        setLibrary([]);
+        setSelectedImageId("");
+        setStats(null);
+        setConversationPage(null);
+        setLibraryPage(null);
+        setLoadingSessions(Boolean(nextSelectedExportId));
+        setLoadingLibrary(Boolean(nextSelectedExportId));
+        setLightboxOpen(false);
+        setLightboxImage(null);
+        setLightboxImages(null);
+        setInspectorDrawerOpen(false);
+      }
+      setSourceVersion((current) => current + 1);
+    },
+    [resetSessionSelection, setInspectorDrawerOpen]
+  );
+
+  const selectExportId = useCallback(
+    (exportId) => {
+      if (exportId === selectedExportId) return;
+      pinnedConversationIdRef.current = "";
+      pendingLightboxIndexRef.current = -1;
+      setSelectedExportId(exportId);
       setConversations([]);
+      setSelectedConversationId("");
+      setConversation(null);
+      setConversationLoadErrorId("");
       setLibrary([]);
       setSelectedImageId("");
       setStats(null);
       setConversationPage(null);
       setLibraryPage(null);
-      setLightboxOpen(false);
-      setLightboxImage(null);
-    }
-    setSourceVersion((current) => current + 1);
-  }, []);
-
-  const selectExportId = useCallback((exportId) => {
-    setSelectedExportId(exportId);
-    if (!exportId) return;
-    void updatePreferences({ selectedExportId: exportId }).catch((nextError) => {
-      setError(nextError.message);
-    });
-  }, []);
+      if (exportId) {
+        setLoadingSessions(true);
+        setLoadingLibrary(true);
+      }
+      if (!exportId) return;
+      void updatePreferences({ selectedExportId: exportId }).catch((nextError) => {
+        setError(nextError.message);
+      });
+    },
+    [selectedExportId]
+  );
 
   const openSettings = useCallback(() => {
     setSettingsDraft(settings?.sourceRoot ?? "");
@@ -534,7 +432,7 @@ function App() {
       }
       setSettingsSaving(true);
       setSettingsError("");
-      setBusy("Updating settings");
+      const doneBusy = pushBusyTask("Updating settings");
       try {
         const payload = await updateSettings({ sourceRoot });
         applySourcePayload(payload);
@@ -546,10 +444,10 @@ function App() {
         setError(nextError.message);
       } finally {
         setSettingsSaving(false);
-        setBusy("");
+        doneBusy();
       }
     },
-    [applySourcePayload, settingsDraft]
+    [applySourcePayload, pushBusyTask, settingsDraft]
   );
 
   const rescanSourceFolder = useCallback(async () => {
@@ -559,12 +457,13 @@ function App() {
       setOnboardingOpen(true);
       return;
     }
-    setBusy("Rescanning");
+    const doneBusy = pushBusyTask("Rescanning");
     try {
       const payload = await rescanExports();
       applySourcePayload(payload, selectedExportId, { resetContent: false });
       setOnboardingOpen(!payload.settings?.sourceRoot);
       setError("");
+      setNotice("Source folder rescanned");
     } catch (nextError) {
       applySourcePayload({
         settings: settings ? { ...settings, sourceRoot: null, exportCount: 0, selectedExportId: null } : null,
@@ -574,214 +473,24 @@ function App() {
       setSettingsError(nextError.message);
       setOnboardingOpen(true);
     } finally {
-      setBusy("");
+      doneBusy();
     }
-  }, [applySourcePayload, selectedExportId, settings?.sourceRoot]);
+  }, [applySourcePayload, pushBusyTask, selectedExportId, settings]);
 
-  const startResize = useCallback(
-    (pane, event) => {
-      event.preventDefault();
-      const handle = event.currentTarget;
-      const startX = event.clientX;
-      const startLayout = layoutSizes;
-      handle.setPointerCapture?.(event.pointerId);
-
-      const onPointerMove = (moveEvent) => {
-        const delta = moveEvent.clientX - startX;
-        setLayoutSizes((current) =>
-          normalizeLayout({
-            ...current,
-            sidebar: pane === "sidebar" ? startLayout.sidebar + delta : current.sidebar,
-            inspector: pane === "inspector" ? startLayout.inspector - delta : current.inspector
-          })
-        );
-      };
-      const stopResize = (upEvent) => {
-        handle.releasePointerCapture?.(upEvent.pointerId);
-        window.removeEventListener("pointermove", onPointerMove);
-        window.removeEventListener("pointerup", stopResize);
-        window.removeEventListener("pointercancel", stopResize);
-      };
-
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", stopResize);
-      window.addEventListener("pointercancel", stopResize);
-    },
-    [layoutSizes]
-  );
-
-  const nudgeResize = useCallback((pane, event) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    const amount = event.shiftKey ? 40 : 16;
-    const direction = event.key === "ArrowRight" ? 1 : -1;
-    setLayoutSizes((current) =>
-      normalizeLayout({
-        ...current,
-        sidebar: pane === "sidebar" ? current.sidebar + direction * amount : current.sidebar,
-        inspector: pane === "inspector" ? current.inspector - direction * amount : current.inspector
-      })
-    );
+  const closeLibraryContextMenu = useCallback(() => {
+    setLibraryContextMenu(null);
   }, []);
-
-  const closeSessionContextMenu = useCallback(() => {
-    setSessionContextMenu(null);
-  }, []);
-
-  const isSessionExportRunning = sessionExportJob?.status === "running";
-
-  const selectConversationRow = useCallback(
-    (event, conversationId) => {
-      if (isSessionExportRunning) return;
-      setSelectedConversationId(conversationId);
-      closeSessionContextMenu();
-
-      if (event.shiftKey) {
-        const anchorId = lastSelectedConversationId || selectedConversationId || conversationId;
-        setSelectedConversationIds(selectConversationRange(conversations, anchorId, conversationId));
-      } else if (event.ctrlKey || event.metaKey) {
-        setSelectedConversationIds((current) => toggleSelection(current, conversationId));
-      } else {
-        setSelectedConversationIds([conversationId]);
-      }
-
-      setLastSelectedConversationId(conversationId);
-    },
-    [
-      conversations,
-      isSessionExportRunning,
-      lastSelectedConversationId,
-      selectedConversationId,
-      closeSessionContextMenu
-    ]
-  );
-
-  const openSessionContextMenu = useCallback(
-    (event, conversationId) => {
-      if (isSessionExportRunning) {
-        event.preventDefault();
-        return;
-      }
-      event.preventDefault();
-      setSelectedConversationId(conversationId);
-      if (!selectedConversationIds.includes(conversationId)) {
-        setSelectedConversationIds([conversationId]);
-      }
-      setLastSelectedConversationId(conversationId);
-      setSessionContextMenu({ x: event.clientX, y: event.clientY, conversationId });
-    },
-    [isSessionExportRunning, selectedConversationIds]
-  );
-
-  const exportSelectedSessions = useCallback(async () => {
-    if (sessionExportJob?.status === "running") return;
-    closeSessionContextMenu();
-    const conversationIds = selectedConversationIds.length
-      ? selectedConversationIds
-      : selectedConversationId
-        ? [selectedConversationId]
-        : [];
-    if (!selectedExportId || !conversationIds.length) return;
-
-    setError("");
-    setSessionExportJob({
-      status: "running",
-      total: conversationIds.length,
-      completed: 0,
-      exportId: selectedExportId,
-      destinationDir: "",
-      items: [],
-      error: ""
-    });
-
-    try {
-      const payload = await saveSessions({
-        exportId: selectedExportId,
-        conversationIds,
-        onProgress: (progress) => {
-          setSessionExportJob((current) =>
-            current
-              ? {
-                  ...current,
-                  total: progress?.total ?? current.total,
-                  completed: progress?.completed ?? current.completed,
-                  exportId: progress?.exportId ?? current.exportId,
-                  status: "running"
-                }
-              : current
-          );
-        }
-      });
-
-      setSessionExportJob({
-        status: "done",
-        total: payload?.progress?.total ?? conversationIds.length,
-        completed: payload?.progress?.completed ?? payload?.items?.length ?? 0,
-        exportId: payload?.export?.id ?? selectedExportId,
-        destinationDir: payload?.destinationDir ?? "",
-        items: payload?.items ?? [],
-        error: ""
-      });
-    } catch (nextError) {
-      const message = nextError?.message ?? "Failed to export sessions";
-      setSessionExportJob((current) => ({
-        status: "error",
-        total: current?.total ?? conversationIds.length,
-        completed: current?.completed ?? 0,
-        exportId: current?.exportId ?? selectedExportId,
-        destinationDir: current?.destinationDir ?? "",
-        items: current?.items ?? [],
-        error: message
-      }));
-      setError(message);
-    }
-  }, [selectedConversationId, selectedConversationIds, selectedExportId, sessionExportJob?.status, closeSessionContextMenu]);
 
   useEffect(() => {
-    if (isSessionExportRunning) {
-      setSessionContextMenu(null);
-    }
-  }, [isSessionExportRunning]);
-
-  const closeExportProgressDialog = useCallback(() => {
-    setSessionExportJob((current) => (current?.status === "running" ? current : null));
-  }, []);
-
-  const openExportFolder = useCallback(async () => {
-    if (!sessionExportJob?.exportId) return;
-    try {
-      const payload = await openSavedSessionsFolder({ exportId: sessionExportJob.exportId });
-      setSessionExportJob((current) =>
-        current
-          ? {
-              ...current,
-              destinationDir: current.destinationDir || payload?.path || ""
-            }
-          : current
-      );
-    } catch (nextError) {
-      const message = nextError?.message ?? "Failed to open export folder";
-      setSessionExportJob((current) =>
-        current
-          ? {
-              ...current,
-              error: message
-            }
-          : current
-      );
-    }
-  }, [sessionExportJob?.exportId]);
-
-  useEffect(() => {
-    if (!sessionContextMenuState) return;
+    if (!libraryContextMenu) return undefined;
 
     const closeOnKeyDown = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        closeSessionContextMenu();
+        closeLibraryContextMenu();
       }
     };
-    const closeOnPointerDown = () => closeSessionContextMenu();
+    const closeOnPointerDown = () => closeLibraryContextMenu();
 
     window.addEventListener("keydown", closeOnKeyDown);
     window.addEventListener("pointerdown", closeOnPointerDown);
@@ -789,92 +498,62 @@ function App() {
       window.removeEventListener("keydown", closeOnKeyDown);
       window.removeEventListener("pointerdown", closeOnPointerDown);
     };
-  }, [sessionContextMenuState, closeSessionContextMenu]);
+  }, [libraryContextMenu, closeLibraryContextMenu]);
 
   const selectedExport = exports.find((item) => item.id === selectedExportId) ?? null;
   const selectedImage = library.find((item) => item.fileId === selectedImageId) ?? library[0] ?? null;
-  const activeLightboxImage = lightboxImage ?? selectedImage;
-  const activeLightboxLibraryIndex = library.findIndex((item) => item.fileId === activeLightboxImage?.fileId);
-  const activeLightboxInLibrary = activeLightboxLibraryIndex >= 0;
-  const activeLightboxIndex = activeLightboxInLibrary ? activeLightboxLibraryIndex : 0;
-  const activeLightboxTotal = activeLightboxInLibrary ? library.length : activeLightboxImage ? 1 : 0;
+  const isSessionsLoading = loadingExports || (Boolean(selectedExportId) && loadingSessions);
+  const isLibraryLoading = loadingExports || (Boolean(selectedExportId) && loadingLibrary);
+  const isConversationLoading =
+    loadingExports ||
+    (Boolean(selectedExportId) && loadingSessions && !activeConversation) ||
+    loadingConversation ||
+    (Boolean(selectedExportId && selectedConversationId) &&
+      !activeConversation &&
+      conversationLoadErrorId !== selectedConversationId);
+  const activeResizeHandlesVisible = !isCompactLayout && isInspectorOpen;
 
-  const openImagePreview = useCallback(
-    (image) => {
-      if (!image?.fileId) return;
-      const libraryImage = library.find((item) => item.fileId === image.fileId);
-      const knownImage = libraryImage
-        ? {
-            ...libraryImage,
-            width: libraryImage.width ?? image.width,
-            height: libraryImage.height ?? image.height
-          }
-        : image;
-      if (knownImage.fileId) setSelectedImageId(knownImage.fileId);
-      setLightboxImage(knownImage);
-      setLightboxOpen(true);
+  const isLibraryLightbox = !lightboxImages?.length;
+  const activeLightboxGallery = isLibraryLightbox ? library : lightboxImages;
+  const activeLightboxImage = lightboxImage ?? selectedImage;
+  const activeLightboxGalleryIndex = activeLightboxGallery.findIndex((item) => item.fileId === activeLightboxImage?.fileId);
+  const activeLightboxInGallery = activeLightboxGalleryIndex >= 0;
+  const activeLightboxIndex = activeLightboxInGallery ? activeLightboxGalleryIndex : 0;
+  const libraryTotalCount = Math.max(library.length, Number(libraryPage?.total) || 0);
+  const activeLightboxTotal = activeLightboxInGallery
+    ? isLibraryLightbox
+      ? libraryTotalCount
+      : activeLightboxGallery.length
+    : activeLightboxImage
+      ? 1
+      : 0;
+
+  const enrichLightboxImage = useCallback(
+    (item) => {
+      if (!item?.fileId) return item;
+      const libraryImage = library.find((entry) => entry.fileId === item.fileId);
+      if (!libraryImage) return item;
+      return {
+        ...libraryImage,
+        sourceConversationId: libraryImage.sourceConversationId ?? item.sourceConversationId ?? null,
+        sourceMessageId: libraryImage.sourceMessageId ?? item.sourceMessageId ?? null,
+        inChat: Boolean(libraryImage.inChat || item.inChat),
+        width: libraryImage.width ?? item.width,
+        height: libraryImage.height ?? item.height
+      };
     },
     [library]
-  );
-
-  const closeImagePreview = useCallback(() => {
-    setLightboxOpen(false);
-    setLightboxImage(null);
-  }, []);
-
-  const saveImage = useCallback(
-    async (image) => {
-      if (!selectedExportId || !image?.fileId) return;
-      setError("");
-      setBusy("Saving image");
-      try {
-        await saveOriginalImage({ exportId: selectedExportId, fileId: image.fileId });
-      } catch (nextError) {
-        setError(nextError?.message ?? "Failed to save image");
-      } finally {
-        setBusy("");
-      }
-    },
-    [selectedExportId]
-  );
-
-  const openPreviewFromQuery = useCallback(() => {
-    const preview = new URLSearchParams(window.location.search).get("preview");
-    const previewImage = library.find((item) => item.fileId === preview);
-    if (previewImage) {
-      setSelectedImageId(preview);
-      setMode("library");
-      setLightboxImage(previewImage);
-      setLightboxOpen(true);
-    }
-  }, [library]);
-
-  useEffect(() => {
-    openPreviewFromQuery();
-  }, [openPreviewFromQuery]);
-
-  const moveLightbox = useCallback(
-    (direction) => {
-      const currentIndex = library.findIndex((item) => item.fileId === (lightboxImage?.fileId ?? selectedImageId));
-      if (!library.length || currentIndex < 0) return;
-      const nextIndex = getAdjacentIndex(currentIndex, direction, library.length);
-      if (nextIndex >= 0) {
-        setSelectedImageId(library[nextIndex].fileId);
-        setLightboxImage(library[nextIndex]);
-      }
-    },
-    [library, lightboxImage?.fileId, selectedImageId]
   );
 
   const loadMoreConversations = useCallback(async () => {
     const cursor = conversationPage?.nextCursor;
     if (!selectedExportId || !cursor) return;
-    const loadKey = `sessions:${selectedExportId}:${sourceVersion}:${query}:${conversationFilter}:${cursor}`;
+    const loadKey = `sessions:${selectedExportId}:${sourceVersion}:${debouncedChatQuery}:${conversationFilter}:${cursor}`;
     if (!beginLoadingMore("sessions", loadKey)) return;
     try {
       const payload = await fetchConversations({
         exportId: selectedExportId,
-        query,
+        query: debouncedChatQuery,
         filter: conversationFilter,
         cursor,
         limit: conversationPage.limit ?? 80
@@ -883,28 +562,30 @@ function App() {
       if (
         latest.selectedExportId !== selectedExportId ||
         latest.sourceVersion !== sourceVersion ||
-        latest.query !== query ||
+        latest.chatQuery !== debouncedChatQuery ||
         latest.conversationFilter !== conversationFilter ||
         latest.conversationPageCursor !== cursor
-      ) return;
+      ) {
+        return;
+      }
       setConversations((current) => mergeByKey(current, payload.items ?? [], "id"));
       setConversationPage(payload.page ?? null);
     } catch (nextError) {
       setError(nextError.message);
     } finally {
-      finishLoadingMore(loadKey);
+      finishLoadingMore("sessions", loadKey);
     }
-  }, [beginLoadingMore, conversationFilter, conversationPage, finishLoadingMore, query, selectedExportId, sourceVersion]);
+  }, [beginLoadingMore, conversationFilter, conversationPage, debouncedChatQuery, finishLoadingMore, selectedExportId, sourceVersion]);
 
   const loadMoreLibrary = useCallback(async () => {
     const cursor = libraryPage?.nextCursor;
     if (!selectedExportId || !cursor) return;
-    const loadKey = `library:${selectedExportId}:${sourceVersion}:${query}:${libraryFilter}:${cursor}`;
+    const loadKey = `library:${selectedExportId}:${sourceVersion}:${debouncedLibraryQuery}:${libraryFilter}:${cursor}`;
     if (!beginLoadingMore("library", loadKey)) return;
     try {
       const payload = await fetchLibrary({
         exportId: selectedExportId,
-        query,
+        query: debouncedLibraryQuery,
         filter: libraryFilter,
         cursor,
         limit: libraryPage.limit ?? 120
@@ -913,18 +594,20 @@ function App() {
       if (
         latest.selectedExportId !== selectedExportId ||
         latest.sourceVersion !== sourceVersion ||
-        latest.query !== query ||
+        latest.libraryQuery !== debouncedLibraryQuery ||
         latest.libraryFilter !== libraryFilter ||
         latest.libraryPageCursor !== cursor
-      ) return;
+      ) {
+        return;
+      }
       setLibrary((current) => mergeByKey(current, payload.items ?? [], "fileId"));
       setLibraryPage(payload.page ?? null);
     } catch (nextError) {
       setError(nextError.message);
     } finally {
-      finishLoadingMore(loadKey);
+      finishLoadingMore("library", loadKey);
     }
-  }, [beginLoadingMore, finishLoadingMore, libraryFilter, libraryPage, query, selectedExportId, sourceVersion]);
+  }, [beginLoadingMore, debouncedLibraryQuery, finishLoadingMore, libraryFilter, libraryPage, selectedExportId, sourceVersion]);
 
   const loadMoreMessages = useCallback(async () => {
     const nextStart = conversation?.range?.nextStart;
@@ -944,7 +627,9 @@ function App() {
         latest.sourceVersion !== sourceVersion ||
         latest.selectedConversationId !== selectedConversationId ||
         latest.messageNextStart !== nextStart
-      ) return;
+      ) {
+        return;
+      }
       setConversation((current) => {
         if (!current || current.id !== payload.id) return current;
         return {
@@ -955,18 +640,255 @@ function App() {
     } catch (nextError) {
       setError(nextError.message);
     } finally {
-      finishLoadingMore(loadKey);
+      finishLoadingMore("messages", loadKey);
     }
   }, [beginLoadingMore, conversation, finishLoadingMore, selectedConversationId, selectedExportId, sourceVersion]);
 
+  const openImagePreview = useCallback(
+    (image, galleryImages = null) => {
+      if (!image?.fileId) return;
+      pendingLightboxIndexRef.current = -1;
+      const knownImage = enrichLightboxImage(image);
+      const nextGallery = Array.isArray(galleryImages) && galleryImages.length ? galleryImages.map(enrichLightboxImage) : null;
+      if (!nextGallery && knownImage.fileId) {
+        setSelectedImageId(knownImage.fileId);
+      }
+      setLightboxImages(nextGallery);
+      setLightboxImage(knownImage);
+      setLightboxOpen(true);
+    },
+    [enrichLightboxImage]
+  );
+
+  const closeImagePreview = useCallback(() => {
+    pendingLightboxIndexRef.current = -1;
+    setLightboxOpen(false);
+    setLightboxImage(null);
+    setLightboxImages(null);
+  }, []);
+
+  const saveImage = useCallback(
+    async (image) => {
+      if (!selectedExportId || !image?.fileId) return;
+      setError("");
+      const doneBusy = pushBusyTask("Saving image");
+      try {
+        const result = await saveOriginalImage({ exportId: selectedExportId, fileId: image.fileId });
+        if (!result?.canceled) {
+          setNotice(`Saved ${result?.fileName || image.displayName || "image"}`);
+        }
+      } catch (nextError) {
+        setError(nextError?.message ?? "Failed to save image");
+      } finally {
+        doneBusy();
+      }
+    },
+    [pushBusyTask, selectedExportId]
+  );
+
+  const openPreviewFromQuery = useCallback(() => {
+    const preview = new URLSearchParams(window.location.search).get("preview");
+    const previewImage = library.find((item) => item.fileId === preview);
+    if (previewImage) {
+      setSelectedImageId(preview);
+      setMode("library");
+      setLightboxImages(null);
+      setLightboxImage(previewImage);
+      setLightboxOpen(true);
+    }
+  }, [library]);
+
+  useEffect(() => {
+    openPreviewFromQuery();
+  }, [openPreviewFromQuery]);
+
+  useEffect(() => {
+    if (
+      !lightboxOpen ||
+      !isLibraryLightbox ||
+      !libraryPage?.nextCursor ||
+      loadingMoreState.library ||
+      isLibraryLoading ||
+      !activeLightboxInGallery
+    ) {
+      return;
+    }
+    if (activeLightboxIndex >= Math.max(0, library.length - 6)) {
+      void loadMoreLibrary();
+    }
+  }, [
+    activeLightboxInGallery,
+    activeLightboxIndex,
+    isLibraryLightbox,
+    isLibraryLoading,
+    library.length,
+    libraryPage?.nextCursor,
+    lightboxOpen,
+    loadMoreLibrary,
+    loadingMoreState.library
+  ]);
+
+  useEffect(() => {
+    const pendingIndex = pendingLightboxIndexRef.current;
+    if (!lightboxOpen || !isLibraryLightbox || pendingIndex < 0) return;
+    const nextItem = library[pendingIndex];
+    if (!nextItem) return;
+    pendingLightboxIndexRef.current = -1;
+    setSelectedImageId(nextItem.fileId);
+    setLibrarySideSyncSeq((current) => current + 1);
+    setSidebarImageJumpSeq((current) => current + 1);
+    setLightboxImage(nextItem);
+  }, [isLibraryLightbox, library, lightboxOpen]);
+
+  const moveLightbox = useCallback(
+    (direction) => {
+      if (activeLightboxTotal <= 1 || activeLightboxGallery.length === 0) return;
+      const targetFileId = lightboxImage?.fileId ?? selectedImageId;
+      const currentIndex = activeLightboxGallery.findIndex((item) => item.fileId === targetFileId);
+      if (currentIndex < 0) return;
+
+      if (isLibraryLightbox && libraryPage?.nextCursor) {
+        if (direction > 0 && currentIndex >= activeLightboxGallery.length - 1) {
+          pendingLightboxIndexRef.current = currentIndex + 1;
+          void loadMoreLibrary();
+          return;
+        }
+        if (direction < 0 && currentIndex === 0) {
+          return;
+        }
+      }
+
+      const nextIndex = getAdjacentIndex(currentIndex, direction, activeLightboxGallery.length);
+      if (nextIndex >= 0) {
+        pendingLightboxIndexRef.current = -1;
+        const nextItem = activeLightboxGallery[nextIndex];
+        if (isLibraryLightbox) {
+          setSelectedImageId(nextItem.fileId);
+          setLibrarySideSyncSeq((current) => current + 1);
+          setSidebarImageJumpSeq((current) => current + 1);
+        }
+        setLightboxImage(nextItem);
+      }
+    },
+    [
+      activeLightboxGallery,
+      activeLightboxTotal,
+      isLibraryLightbox,
+      libraryPage?.nextCursor,
+      lightboxImage?.fileId,
+      loadMoreLibrary,
+      selectedImageId
+    ]
+  );
+
+  const selectLibrarySideImage = useCallback((fileId) => {
+    setSelectedImageId(fileId);
+    setSidebarImageJumpSeq((current) => current + 1);
+  }, []);
+
+  const selectGalleryImage = useCallback((fileId) => {
+    setSelectedImageId(fileId);
+    setLibrarySideSyncSeq((current) => current + 1);
+  }, []);
+
+  const openLibraryContextMenu = useCallback(
+    (event, item, source = "gallery") => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!item) return;
+      closeSessionContextMenu();
+      setSelectedImageId(item.fileId);
+      if (source === "sidebar") {
+        setSidebarImageJumpSeq((current) => current + 1);
+      } else {
+        setLibrarySideSyncSeq((current) => current + 1);
+      }
+      setLibraryContextMenu({ x: event.clientX, y: event.clientY, image: item });
+    },
+    [closeSessionContextMenu]
+  );
+
+  const jumpToConversationTarget = useCallback(
+    ({ conversationId = "", messageId = null, fileId = null } = {}) => {
+      const targetConversationId = conversationId || selectedConversationId;
+      if (!targetConversationId) return;
+      if (mode !== "chat" || targetConversationId !== selectedConversationId) {
+        pinnedConversationIdRef.current = targetConversationId;
+        if (debouncedChatQuery !== "" || conversationFilter !== "all") {
+          setLoadingSessions(true);
+        }
+        setChatQuery("");
+        setConversationFilter("all");
+        setSelectedConversationId(targetConversationId);
+        setSidebarSessionJumpSeq((current) => current + 1);
+        setMode("chat");
+      }
+      pendingLightboxIndexRef.current = -1;
+      setLightboxOpen(false);
+      setLightboxImage(null);
+      setLightboxImages(null);
+      setLibraryContextMenu(null);
+      setInspectorDrawerOpen(false);
+      if (messageId || fileId) {
+        setChatJumpRequest((prev) => ({
+          seq: (prev?.seq ?? 0) + 1,
+          conversationId: targetConversationId,
+          messageId: messageId || null,
+          fileId: fileId || null
+        }));
+      }
+    },
+    [conversationFilter, debouncedChatQuery, mode, selectedConversationId, setInspectorDrawerOpen]
+  );
+
+  const openSourceSession = useCallback(
+    (conversationId, target = null) => {
+      if (!conversationId) return;
+      jumpToConversationTarget({
+        conversationId,
+        messageId: target?.messageId ?? null,
+        fileId: target?.fileId ?? null
+      });
+    },
+    [jumpToConversationTarget]
+  );
+
+  const openImageInChat = useCallback(
+    (item) => {
+      if (!item?.inChat || !item?.sourceConversationId) return;
+      jumpToConversationTarget({
+        conversationId: item.sourceConversationId,
+        messageId: item.sourceMessageId ?? null,
+        fileId: item.fileId ?? null
+      });
+    },
+    [jumpToConversationTarget]
+  );
+
+  const resetFilters = useCallback(() => {
+    if (mode === "chat") {
+      setChatQuery("");
+      setConversationFilter("all");
+    } else {
+      setLibraryQuery("");
+      setLibraryFilter("all");
+    }
+  }, [mode]);
+
   return (
     <div
-      className="app-shell"
+      className={!isCompactLayout && !isInspectorOpen ? "app-shell inspector-collapsed" : "app-shell"}
       style={{
         "--sidebar-width": `${layoutSizes.sidebar}px`,
         "--inspector-width": `${layoutSizes.inspector}px`
       }}
     >
+      {busy && (
+        <div className="top-loading-bar" role="progressbar" aria-label={busy}>
+          <span />
+        </div>
+      )}
+
       <Sidebar
         mode={mode}
         setMode={setMode}
@@ -976,27 +898,41 @@ function App() {
         setSelectedExportId={selectExportId}
         query={query}
         setQuery={setQuery}
+        debouncedChatQuery={debouncedChatQuery}
+        debouncedLibraryQuery={debouncedLibraryQuery}
         conversationFilter={conversationFilter}
         setConversationFilter={setConversationFilter}
         libraryFilter={libraryFilter}
         setLibraryFilter={setLibraryFilter}
-        conversations={conversations}
+        conversations={displayedConversations}
         selectedConversationId={selectedConversationId}
         selectedConversationIds={selectedConversationIds}
         onSelectConversationRow={selectConversationRow}
         onOpenSessionContextMenu={openSessionContextMenu}
+        onExportSessions={exportSelectedSessions}
+        onClearSelection={clearConversationSelection}
+        isExportRunning={isSessionExportRunning}
         library={library}
         selectedImageId={selectedImageId}
-        setSelectedImageId={setSelectedImageId}
+        setSelectedImageId={selectLibrarySideImage}
+        onOpenImageContextMenu={(event, item) => openLibraryContextMenu(event, item, "sidebar")}
+        librarySideSyncSeq={librarySideSyncSeq}
+        sidebarSessionJumpSeq={sidebarSessionJumpSeq}
         stats={stats}
         busy={busy}
+        isLoadingSessions={isSessionsLoading}
+        isLoadingLibrary={isLibraryLoading}
         conversationPage={conversationPage}
         libraryPage={libraryPage}
-        loadingMore={loadingMore}
+        loadingMoreSessions={loadingMoreState.sessions}
+        loadingMoreLibrary={loadingMoreState.library}
         onLoadMoreConversations={loadMoreConversations}
         onLoadMoreLibrary={loadMoreLibrary}
         onOpenSettings={openSettings}
         onRescanExports={rescanSourceFolder}
+        onResetFilters={resetFilters}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       <ResizeHandle pane="sidebar" onPointerDown={startResize} onKeyDown={nudgeResize} />
@@ -1004,13 +940,21 @@ function App() {
       {mode === "chat" ? (
         <ChatReader
           exportId={selectedExportId}
-          conversation={conversation}
-          selectedSummary={conversations.find((item) => item.id === selectedConversationId)}
+          conversation={activeConversation}
+          selectedSummary={selectedConversationSummary}
           resetKey={`${selectedExportId}:${selectedConversationId}`}
+          sidebarSearchQuery={chatQuery}
+          jumpRequest={chatJumpRequest}
           busy={busy}
-          loadingMore={loadingMore}
+          isLoadingConversation={isConversationLoading}
+          loadingMore={loadingMoreState.messages ? "messages" : ""}
           onLoadMoreMessages={loadMoreMessages}
           onOpenImage={openImagePreview}
+          onExportSessions={exportSelectedSessions}
+          isExportRunning={isSessionExportRunning}
+          onNotify={setNotice}
+          isInspectorOpen={isInspectorOpen}
+          onToggleInspector={toggleInspector}
         />
       ) : (
         <LibraryReader
@@ -1018,29 +962,66 @@ function App() {
           images={library}
           image={selectedImage}
           selectedImageId={selectedImageId}
-          setSelectedImageId={setSelectedImageId}
+          setSelectedImageId={selectGalleryImage}
+          onOpenImageContextMenu={(event, item) => openLibraryContextMenu(event, item, "gallery")}
+          sidebarJumpSeq={sidebarImageJumpSeq}
           stats={stats?.library}
           page={libraryPage}
-          resetKey={`${selectedExportId}:${query}:${libraryFilter}`}
+          resetKey={`${selectedExportId}:${debouncedLibraryQuery}:${libraryFilter}`}
           busy={busy}
-          loadingMore={loadingMore}
+          isLoadingLibrary={isLibraryLoading}
+          loadingMore={loadingMoreState.library ? "library" : ""}
+          hasActiveFilter={Boolean(libraryQuery) || libraryFilter !== "all"}
+          onResetFilters={resetFilters}
           onLoadMoreLibrary={loadMoreLibrary}
-          openLightbox={() => openImagePreview(selectedImage)}
+          openLightbox={(targetImage) => {
+            const resolvedImage = targetImage ?? selectedImage;
+            if (resolvedImage?.exists) openImagePreview(resolvedImage);
+          }}
+          isInspectorOpen={isInspectorOpen}
+          onToggleInspector={toggleInspector}
         />
       )}
 
-      <ResizeHandle pane="inspector" onPointerDown={startResize} onKeyDown={nudgeResize} />
+      {activeResizeHandlesVisible && <ResizeHandle pane="inspector" onPointerDown={startResize} onKeyDown={nudgeResize} />}
+
+      {isCompactLayout && inspectorDrawerOpen && <div className="inspector-backdrop" onClick={closeInspector} aria-hidden="true" />}
 
       <Inspector
         mode={mode}
         selectedExport={selectedExport}
-        conversation={conversation}
+        conversation={activeConversation}
+        selectedSummary={selectedConversationSummary}
         image={selectedImage}
         stats={stats}
         error={error}
+        drawerOpen={isCompactLayout && inspectorDrawerOpen}
+        onCloseDrawer={closeInspector}
+        selectedSessionCount={selectedConversationIds.length || (selectedConversationId ? 1 : 0)}
+        onExportSessions={exportSelectedSessions}
+        isExportRunning={isSessionExportRunning}
+        onOpenSourceSession={openSourceSession}
+        onJumpToMessage={jumpToConversationTarget}
         onPreviewImage={openImagePreview}
         onSaveImage={saveImage}
       />
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+          <button type="button" aria-label="Dismiss error" onClick={() => setError("")}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {notice && (
+        <div className="toast-banner" role="status" aria-live="polite">
+          <Check size={15} />
+          <span>{notice}</span>
+        </div>
+      )}
 
       {settingsOpen && (
         <SettingsDialog
@@ -1075,6 +1056,14 @@ function App() {
         onClose={closeSessionContextMenu}
       />
 
+      <ImageContextMenu
+        menu={libraryContextMenu}
+        image={libraryContextMenu?.image ?? null}
+        onOpenInChat={openImageInChat}
+        onSaveImage={saveImage}
+        onClose={closeLibraryContextMenu}
+      />
+
       <ExportProgressDialog job={sessionExportJob} onOpenFolder={openExportFolder} onClose={closeExportProgressDialog} />
 
       {lightboxOpen && activeLightboxImage && (
@@ -1085,6 +1074,7 @@ function App() {
           total={activeLightboxTotal}
           onClose={closeImagePreview}
           onMove={moveLightbox}
+          onOpenInChat={openImageInChat}
           onSaveImage={saveImage}
         />
       )}
@@ -1092,991 +1082,13 @@ function App() {
   );
 }
 
-function SessionContextMenu({ menu, count, onExport, onClose }) {
-  if (!menu || count < 1) return null;
-  const label = count === 1 ? "Export this session" : `Export ${count} selected sessions`;
-
-  return (
-    <div
-      className="session-context-menu"
-      role="group"
-      aria-label="Session actions"
-      style={{ left: menu.x, top: menu.y }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <button type="button" onClick={onExport}>
-        <FileDown size={15} />
-        <span>{label}</span>
-      </button>
-      <button type="button" className="session-context-menu-close" aria-label="Close session context menu" onClick={onClose}>
-        <X size={15} />
-      </button>
-    </div>
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   );
 }
 
-function ExportProgressDialog({ job, onOpenFolder, onClose }) {
-  const exportDialogRef = useRef(null);
-  const previouslyFocusedElementRef = useRef(null);
-  const isOpen = Boolean(job);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.classList.add("modal-open");
-    const dialog = exportDialogRef.current;
-    const focusableElements = dialog ? Array.from(dialog.querySelectorAll(FOCUSABLE_DIALOG_SELECTOR)) : [];
-    const initialFocusTarget = focusableElements[0] ?? dialog;
-    initialFocusTarget?.focus?.();
-    return () => {
-      document.body.classList.remove("modal-open");
-      const previousFocus = previouslyFocusedElementRef.current;
-      if (previousFocus?.isConnected && typeof previousFocus.focus === "function") {
-        previousFocus.focus();
-      }
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const onKeyDown = (event) => {
-      const dialog = exportDialogRef.current;
-      if (!dialog) return;
-
-      if (event.key === "Escape" && job.status !== "running") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-
-      if (event.key === "Tab") {
-        const focusableElements = Array.from(dialog.querySelectorAll(FOCUSABLE_DIALOG_SELECTOR));
-        const currentIndex = focusableElements.findIndex((element) => element === document.activeElement);
-        const nextIndex = getNextDialogFocusIndex(currentIndex, focusableElements.length, event.shiftKey);
-        event.preventDefault();
-        if (nextIndex < 0) {
-          dialog.focus();
-          return;
-        }
-        focusableElements[nextIndex]?.focus?.();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [isOpen, job?.status, onClose]);
-
-  if (!job) return null;
-
-  const percent = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
-  const title = job.status === "done" ? "Export complete" : job.status === "error" ? "Export failed" : "Exporting sessions...";
-
-  return (
-    <div className="export-progress-backdrop" role="presentation" onPointerDown={(event) => event.stopPropagation()}>
-      <section
-        className="export-progress-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="export-progress-title"
-        tabIndex={-1}
-        ref={exportDialogRef}
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        <header>
-          <div>
-            <FileDown size={18} />
-            <h2 id="export-progress-title">{title}</h2>
-          </div>
-          {job.status !== "running" && (
-            <button type="button" className="icon-button" aria-label="Close export dialog" onClick={onClose}>
-              <X size={18} />
-            </button>
-          )}
-        </header>
-
-        <div className="progress-bar" role="progressbar" aria-label="Session export progress" aria-valuemin={0} aria-valuemax={job.total} aria-valuenow={job.completed}>
-          <span style={{ width: `${percent}%` }} />
-        </div>
-
-        <p className="export-progress-count">
-          {job.completed} / {job.total} sessions
-        </p>
-
-        {job.error && <p className="settings-error dialog-error">{job.error}</p>}
-        {job.destinationDir && <p className="export-progress-path">{job.destinationDir}</p>}
-
-        {(job.status === "done" || job.status === "error") && (
-          <footer>
-            {job.status === "done" && (
-              <button type="button" className="primary-button export-progress-open" onClick={onOpenFolder}>
-                <FolderOpen size={15} />
-                Open folder
-              </button>
-            )}
-            <button type="button" onClick={onClose}>
-              Close
-            </button>
-          </footer>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function ResizeHandle({ pane, onPointerDown, onKeyDown }) {
-  const label = pane === "sidebar" ? "Resize sidebar" : "Resize inspector";
-  return (
-    <div
-      className={`resize-handle ${pane}-resize`}
-      role="separator"
-      aria-label={label}
-      aria-orientation="vertical"
-      tabIndex={0}
-      onPointerDown={(event) => onPointerDown(pane, event)}
-      onKeyDown={(event) => onKeyDown(pane, event)}
-    />
-  );
-}
-
-function Sidebar({
-  mode,
-  setMode,
-  exports,
-  selectedExport,
-  selectedExportId,
-  setSelectedExportId,
-  query,
-  setQuery,
-  conversationFilter,
-  setConversationFilter,
-  libraryFilter,
-  setLibraryFilter,
-  conversations,
-  selectedConversationId,
-  selectedConversationIds,
-  onSelectConversationRow,
-  onOpenSessionContextMenu: handleSessionContextPopup,
-  library,
-  selectedImageId,
-  setSelectedImageId,
-  stats,
-  busy,
-  conversationPage,
-  libraryPage,
-  loadingMore,
-  onLoadMoreConversations,
-  onLoadMoreLibrary,
-  onOpenSettings,
-  onRescanExports
-}) {
-  const virtualConversations = useVirtualList(conversations, {
-    itemSize: CONVERSATION_ROW_SIZE,
-    overscan: 8,
-    resetKey: `sessions:${selectedExportId}:${query}:${conversationFilter}`
-  });
-  const virtualSideImages = useVirtualList(library, {
-    itemSize: LIBRARY_SIDE_ROW_SIZE,
-    overscan: 8,
-    resetKey: `library-side:${selectedExportId}:${query}:${libraryFilter}`
-  });
-  const conversationAutoLoadRef = useAutoLoadMore({
-    hasMore: mode === "chat" && Boolean(conversationPage?.nextCursor),
-    isLoading: Boolean(busy) || loadingMore === "sessions",
-    onLoadMore: onLoadMoreConversations
-  });
-  const libraryAutoLoadRef = useAutoLoadMore({
-    hasMore: mode === "library" && Boolean(libraryPage?.nextCursor),
-    isLoading: Boolean(busy) || loadingMore === "library",
-    onLoadMore: onLoadMoreLibrary
-  });
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-
-  const selectExport = useCallback(
-    (exportId) => {
-      setSelectedExportId(exportId);
-      setExportMenuOpen(false);
-    },
-    [setSelectedExportId]
-  );
-
-  const closeExportMenu = useCallback((event) => {
-    if (!event.currentTarget.contains(event.relatedTarget)) {
-      setExportMenuOpen(false);
-    }
-  }, []);
-
-  const handleExportMenuKeyDown = useCallback((event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setExportMenuOpen(false);
-    }
-  }, []);
-
-  return (
-    <aside className="sidebar">
-      <header className="sidebar-header">
-        <h1>GPTExportViewer</h1>
-        <button className="icon-button" aria-label="Settings" onClick={onOpenSettings}>
-          <Settings size={17} />
-        </button>
-        <button className="icon-button" aria-label="Rescan source folder" onClick={onRescanExports}>
-          <RefreshCcw size={17} />
-        </button>
-      </header>
-
-      <div className="snapshot-switcher-wrap" onBlur={closeExportMenu} onKeyDown={handleExportMenuKeyDown}>
-        <button type="button" className="snapshot-switcher" aria-haspopup="listbox" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen((current) => !current)}>
-          <span className="status-dot" />
-          <span className="snapshot-selected-export">
-            <strong>{selectedExport ? formatExportLabel(selectedExport) : "No export selected"}</strong>
-          </span>
-          <ChevronDown size={17} />
-          <small title={selectedExport?.name ?? ""}>{selectedExport ? `${selectedExport.warnings?.length ?? 0} warnings` : "No export selected"}</small>
-        </button>
-        {exportMenuOpen && (
-          <div className="snapshot-menu" role="listbox" aria-label="Export snapshots">
-            {exports.map((item) => (
-              <div
-                key={item.id}
-                className={`snapshot-option ${item.id === selectedExportId ? "selected" : ""}`}
-                role="option"
-                aria-selected={item.id === selectedExportId}
-                tabIndex={0}
-                title={item.name}
-                onClick={() => selectExport(item.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    selectExport(item.id);
-                  }
-                }}
-              >
-                <span className="status-dot" />
-                <span>
-                  <strong>{formatExportLabel(item)}</strong>
-                  <small>{item.warnings?.length ?? 0} warnings</small>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="mode-switcher">
-        <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>
-          <MessageSquare size={16} />
-          Sessions
-        </button>
-        <button className={mode === "library" ? "active" : ""} onClick={() => setMode("library")}>
-          <Images size={16} />
-          Library
-        </button>
-      </div>
-
-      <label className="search-field">
-        <Search size={16} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={mode === "chat" ? "Search sessions" : "Search images"} />
-        {query && (
-          <button aria-label="Clear search" onClick={() => setQuery("")}>
-            <X size={14} />
-          </button>
-        )}
-      </label>
-
-      {mode === "library" ? (
-        <div className="segmented">
-          {[
-            ["all", "All"],
-            ["linked", "Linked"],
-            ["library-only", "Library"]
-          ].map(([value, label]) => (
-            <button key={value} className={libraryFilter === value ? "active" : ""} onClick={() => setLibraryFilter(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="segmented chat-filter" aria-label="Session filter">
-          {[
-            ["all", "All"],
-            ["active", "Active"],
-            ["archived", "Archived"]
-          ].map(([value, label]) => (
-            <button key={value} className={conversationFilter === value ? "active" : ""} onClick={() => setConversationFilter(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {mode === "chat" ? (
-        <div className="conversation-list" ref={virtualConversations.containerRef}>
-          <VirtualSpacer size={virtualConversations.beforeSize} />
-          {virtualConversations.items.map(({ item }) => (
-            (() => {
-              const isActive = item.id === selectedConversationId;
-              const isExportSelected = selectedConversationIds.includes(item.id);
-              return (
-                <button
-                  className={`conversation-row ${isActive ? "selected" : ""} ${isExportSelected ? "multi-selected" : ""}`}
-                  key={item.id}
-                  aria-current={isActive ? "true" : undefined}
-                  aria-pressed={isExportSelected}
-                  onClick={(event) => onSelectConversationRow(event, item.id)}
-                  onContextMenu={(event) => handleSessionContextPopup(event, item.id)}
-                >
-                  <span className="star-wrap">{item.starred ? <Star className="starred" size={16} fill="currentColor" /> : <MessageSquare size={15} />}</span>
-                  <span className="conversation-copy">
-                    <strong>{item.title}</strong>
-                    <span>
-                      {item.messageCount} messages
-                      {item.attachmentCount ? ` · ${item.attachmentCount} files` : ""}
-                    </span>
-                  </span>
-                  <time>{formatShortDate(item.updatedAt)}</time>
-                </button>
-              );
-            })()
-          ))}
-          <VirtualSpacer size={virtualConversations.afterSize} />
-          {conversationPage?.nextCursor && (
-            <div className={`auto-load-sentinel ${loadingMore === "sessions" ? "loading" : ""}`} ref={conversationAutoLoadRef} role="status" aria-live="polite" aria-busy={loadingMore === "sessions"}>
-              {loadingMore === "sessions" ? "Loading sessions..." : `Auto-loading sessions (${conversations.length} / ${conversationPage.total})`}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="library-side-list" ref={virtualSideImages.containerRef}>
-          <VirtualSpacer size={virtualSideImages.beforeSize} />
-          {virtualSideImages.items.map(({ item }) => (
-            <button
-              className={`image-side-row ${item.fileId === selectedImageId ? "selected" : ""}`}
-              key={item.fileId}
-              onClick={() => setSelectedImageId(item.fileId)}
-            >
-              <Thumb exportId={selectedExportId} image={item} small />
-              <span>
-                <strong>{item.displayName}</strong>
-                <em>{item.mime} · {item.sizeLabel}</em>
-              </span>
-              <small>{item.sourceState}</small>
-            </button>
-          ))}
-          <VirtualSpacer size={virtualSideImages.afterSize} />
-          {libraryPage?.nextCursor && (
-            <div className={`auto-load-sentinel ${loadingMore === "library" ? "loading" : ""}`} ref={libraryAutoLoadRef} role="status" aria-live="polite" aria-busy={loadingMore === "library"}>
-              {loadingMore === "library" ? "Loading images..." : `Auto-loading images (${library.length} / ${libraryPage.total})`}
-            </div>
-          )}
-        </div>
-      )}
-
-      <footer className="sidebar-footer">
-        <span>
-          <Database size={14} />
-          {busy || "Ready"}
-        </span>
-        <span>{mode === "chat" ? stats?.conversations?.totalConversations ?? 0 : stats?.library?.totalImages ?? 0} indexed</span>
-      </footer>
-    </aside>
-  );
-}
-
-function ChatReader({ exportId, conversation, selectedSummary, resetKey, busy, loadingMore, onLoadMoreMessages, onOpenImage }) {
-  const title = conversation?.title ?? selectedSummary?.title ?? "No session selected";
-  const messages = conversation?.messages ?? [];
-  const [expandedMessageIds, setExpandedMessageIds] = useState(() => new Set());
-  const virtualMessages = useMeasuredVirtualList(messages, {
-    estimatedItemSize: ESTIMATED_MESSAGE_ROW_SIZE,
-    overscan: 12,
-    resetKey,
-    getItemKey: (message) => message.id
-  });
-  const messageAutoLoadRef = useAutoLoadMore({
-    hasMore: conversation?.range?.nextStart != null,
-    isLoading: Boolean(busy) || loadingMore === "messages",
-    onLoadMore: onLoadMoreMessages
-  });
-  const copyMessageText = useCallback(async (text) => {
-    await copyMessageTextToClipboard(text);
-  }, []);
-  const isMessageExpanded = useCallback((messageId) => expandedMessageIds.has(messageId), [expandedMessageIds]);
-  const toggleMessageExpanded = useCallback((messageId) => {
-    setExpandedMessageIds((current) => {
-      const next = new Set(current);
-      if (next.has(messageId)) {
-        next.delete(messageId);
-      } else {
-        next.add(messageId);
-      }
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    setExpandedMessageIds(new Set());
-  }, [resetKey]);
-
-  return (
-    <main className="reader">
-      <header className="reader-header">
-        <div>
-          <div className="title-line">
-            <MessageSquare size={18} />
-            <h2>{title}</h2>
-            {conversation?.starred && <span className="library-pill">Starred</span>}
-          </div>
-          <span>{conversation?.model ?? selectedSummary?.model ?? "model unknown"}</span>
-        </div>
-      </header>
-
-      <div className="range-strip">
-        <span>{messages.length ? `Showing ${messages.length} of ${conversation.totalMessages}` : busy || "No messages"}</span>
-        <span>{formatChatTimestamp(conversation?.updatedAt, "")}</span>
-      </div>
-
-      <section className="message-window scroll-window" ref={virtualMessages.containerRef}>
-        <VirtualSpacer size={virtualMessages.beforeSize} />
-        {virtualMessages.items.map(({ item: message }) => {
-          const isLong = (message.text?.length ?? 0) > MESSAGE_COLLAPSE_LIMIT;
-          const expanded = !isLong || isMessageExpanded(message.id);
-          const parts = message.parts ?? [];
-          const displayParts = parts.length ? parts : [{ partType: "text", text: message.text || "(empty message)" }];
-          const renderedPartFileIds = new Set(displayParts.map((part) => part.fileId).filter(Boolean));
-          const extraAssetRefs = (message.assetRefs ?? []).filter((asset) => !renderedPartFileIds.has(asset.fileId));
-          return (
-            <article className={`message ${message.role === "user" ? "user" : ""}`} key={message.id} ref={virtualMessages.measureItem(message.id)}>
-              <div className="avatar">{roleInitial(message.role)}</div>
-              <div className={`message-body ${isLong && !expanded ? "collapsed" : ""}`}>
-                <div className="message-meta">
-                  <strong>{roleLabel(message.role)}</strong>
-                  <time>{formatChatTimestamp(message.createdAt, "")}</time>
-                </div>
-                <div className="message-parts">
-                  {displayParts.map((part, index) => renderMessagePart(part, message, index, exportId, isLong && !expanded, onOpenImage))}
-                </div>
-                {extraAssetRefs.length > 0 && (
-                  <div className="attachment-chips">
-                    {extraAssetRefs.slice(0, 6).map((asset) => (
-                      <span key={`${message.id}-${asset.fileId}`}>
-                        <Paperclip size={13} />
-                        {asset.name ?? asset.fileId}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {isLong && (
-                  <div className="message-actions">
-                    <button type="button" className="message-expand-button" onClick={() => toggleMessageExpanded(message.id)}>
-                      {expanded ? "Collapse message" : "Show full message"}
-                    </button>
-                  </div>
-                )}
-                <button type="button" className="message-copy-button" aria-label="Copy message" title="Copy message" onClick={() => void copyMessageText(message.text ?? "")}>
-                  <Copy size={14} />
-                </button>
-              </div>
-            </article>
-          );
-        })}
-        <VirtualSpacer size={virtualMessages.afterSize} />
-        {conversation?.range?.nextStart != null && (
-          <div className={`auto-load-sentinel ${loadingMore === "messages" ? "loading" : ""}`} ref={messageAutoLoadRef} role="status" aria-live="polite" aria-busy={loadingMore === "messages"}>
-            {loadingMore === "messages" ? "Loading messages..." : `Auto-loading messages (${messages.length} / ${conversation.totalMessages})`}
-          </div>
-        )}
-      </section>
-
-      <div className="composer">
-        <span>(Read-only) This export is browsed locally.</span>
-        <button aria-label="Read only">
-          <Sparkles size={16} />
-        </button>
-      </div>
-
-      <footer className="reader-status">
-        <span className="ok">
-          <Clock3 size={14} />
-          Automatic message load
-        </span>
-        <span>JSON cache</span>
-        <span>Local only</span>
-      </footer>
-    </main>
-  );
-}
-
-function renderMessagePart(part, message, index, exportId, collapsed, onOpenImage) {
-  const partType = part.partType ?? part.type ?? "text";
-  const key = `${message.id}-${index}-${part.fileId ?? partType}`;
-  if (partType === "image" && part.fileId && exportId) {
-    const image = {
-      fileId: part.fileId,
-      displayName: part.name ?? part.fileId,
-      mime: part.mimeType ?? part.mime ?? "image",
-      sizeLabel: "",
-      sourceState: "linked",
-      status: "ready",
-      exists: true,
-      width: part.width,
-      height: part.height
-    };
-    return (
-      <button type="button" className="chat-image-button" key={key} onClick={() => onOpenImage?.(image)} aria-label={`Open ${image.displayName}`}>
-        <figure className="chat-image">
-          <img src={assetUrl(exportId, part.fileId)} alt={image.displayName} loading="lazy" />
-          {(part.name || part.width || part.height) && (
-            <figcaption>
-              <FileImage size={13} />
-              <span>{part.name ?? part.fileId}</span>
-              {part.width && part.height && <em>{part.width}x{part.height}</em>}
-            </figcaption>
-          )}
-        </figure>
-      </button>
-    );
-  }
-
-  if ((partType === "file" || part.fileId) && part.fileId) {
-    return (
-      <div className="attachment-chips" key={key}>
-        <span>
-          <Paperclip size={13} />
-          {part.name ?? part.fileId}
-        </span>
-      </div>
-    );
-  }
-
-  const text = String(part.text ?? "");
-  const visibleText = collapsed && text.length > MESSAGE_COLLAPSE_LIMIT ? `${text.slice(0, MESSAGE_COLLAPSE_LIMIT).trimEnd()}...` : text;
-  if (!visibleText) return null;
-  return (
-    <p className={`message-text ${collapsed ? "collapsed" : ""}`} key={key}>
-      {visibleText}
-    </p>
-  );
-}
-
-function LibraryReader({ exportId, images, image, selectedImageId, setSelectedImageId, stats, page, resetKey, busy, loadingMore, onLoadMoreLibrary, openLightbox }) {
-  const virtualImages = useVirtualGrid(images, { resetKey });
-  const libraryAutoLoadRef = useAutoLoadMore({
-    hasMore: Boolean(page?.nextCursor),
-    isLoading: Boolean(busy) || loadingMore === "library",
-    onLoadMore: onLoadMoreLibrary
-  });
-
-  return (
-    <main className="reader library-reader">
-      <header className="reader-header">
-        <div>
-          <div className="title-line">
-            <Images size={18} />
-            <h2>Library</h2>
-            <span className="library-pill">Images</span>
-          </div>
-          <span>{images.length} visible images</span>
-        </div>
-        <div className="reader-actions">
-          <button aria-label="Open selected image" onClick={openLightbox} disabled={!image}>
-            <ZoomIn size={17} />
-          </button>
-        </div>
-      </header>
-
-      <div className="range-strip">
-        <span>Linked, library-only, and missing-source images</span>
-        <span>{stats?.missingFiles ? `${stats.missingFiles} missing files` : "streamed on demand"}</span>
-      </div>
-
-      <section className="gallery-window" ref={virtualImages.containerRef}>
-        <div className="library-summary">
-          <div>
-            <strong>{stats?.totalImages ?? images.length}</strong>
-            <span>Total images</span>
-          </div>
-          <div>
-            <strong>{stats?.linkedImages ?? 0}</strong>
-            <span>Linked to chats</span>
-          </div>
-          <div>
-            <strong>{stats?.libraryOnlyImages ?? 0}</strong>
-            <span>Library only</span>
-          </div>
-        </div>
-
-        {image && (
-          <div className="selected-image-strip">
-            <Thumb exportId={exportId} image={image} small />
-            <div>
-              <strong>{image.displayName}</strong>
-              <span>{image.mime} · {image.sizeLabel} · {image.sourceState}</span>
-            </div>
-            <button onClick={openLightbox}>
-              <ExternalLink size={15} />
-              Preview
-            </button>
-          </div>
-        )}
-
-        <VirtualSpacer size={virtualImages.beforeSize} />
-        <div className="gallery-grid" ref={virtualImages.gridRef}>
-          {virtualImages.items.map(({ item }) => (
-            <button
-              className={`image-card ${item.fileId === selectedImageId ? "selected" : ""}`}
-              key={item.fileId}
-              onClick={() => setSelectedImageId(item.fileId)}
-              onDoubleClick={openLightbox}
-            >
-              <Thumb exportId={exportId} image={item} />
-              <span className="image-card-copy">
-                <strong>{item.displayName}</strong>
-                <em>{item.mime} · {item.sizeLabel}</em>
-              </span>
-              <span className={`origin-chip ${item.sourceState === "linked" ? "linked" : ""}`}>{item.sourceState}</span>
-            </button>
-          ))}
-        </div>
-        <VirtualSpacer size={virtualImages.afterSize} />
-        {page?.nextCursor && (
-          <div className={`auto-load-sentinel ${loadingMore === "library" ? "loading" : ""}`} ref={libraryAutoLoadRef} role="status" aria-live="polite" aria-busy={loadingMore === "library"}>
-            {loadingMore === "library" ? "Loading images..." : `Auto-loading images (${images.length} / ${page.total})`}
-          </div>
-        )}
-      </section>
-
-      <footer className="reader-status">
-        <span className="ok">
-          <HardDrive size={14} />
-          Asset files stay on disk
-        </span>
-        <span>Images streamed by file id</span>
-      </footer>
-    </main>
-  );
-}
-
-function ImageLightbox({ exportId, image, currentIndex, total, onClose, onMove, onSaveImage }) {
-  const [imageContextMenu, setImageContextMenu] = useState(null);
-  const closeImageContextMenu = useCallback(() => setImageContextMenu(null), []);
-  const openImageContextMenu = useCallback((event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setImageContextMenu({ x: event.clientX, y: event.clientY });
-  }, []);
-
-  useEffect(() => {
-    document.body.classList.add("modal-open");
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
-      if (event.key === "ArrowRight") onMove(1);
-      if (event.key === "ArrowLeft") onMove(-1);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.classList.remove("modal-open");
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [onClose, onMove]);
-
-  const onWheel = (event) => {
-    const direction = getWheelDirection(event.deltaY || event.deltaX);
-    if (direction) onMove(direction);
-  };
-
-  return (
-    <div className="lightbox-backdrop" role="dialog" aria-modal="true" aria-label="Image preview" onWheel={onWheel} onClick={onClose}>
-      <div
-        className="lightbox-shell"
-        style={lightboxSizeStyle(image)}
-        onClick={(event) => {
-          event.stopPropagation();
-          closeImageContextMenu();
-        }}
-      >
-        <header className="lightbox-header">
-          <div>
-            <strong>{image.displayName}</strong>
-            <span>{currentIndex + 1} / {total}</span>
-          </div>
-          <div className="lightbox-actions">
-            <button aria-label="Close preview" onClick={onClose}>
-              <X size={20} />
-            </button>
-          </div>
-        </header>
-        <div className="lightbox-stage">
-          <button className="lightbox-step previous" aria-label="Previous image" onClick={() => onMove(-1)}>
-            <ArrowLeft size={22} />
-          </button>
-          <div className="lightbox-image real-image" onContextMenu={openImageContextMenu}>
-            <img src={assetUrl(exportId, image.fileId)} alt={image.displayName} />
-          </div>
-          <button className="lightbox-step next" aria-label="Next image" onClick={() => onMove(1)}>
-            <ArrowRight size={22} />
-          </button>
-        </div>
-        <footer className="lightbox-footer">
-          <span>{image.mime}</span>
-          <span>{formatImageResolution(image)}</span>
-          <span>{image.sourceState}</span>
-          <span>{image.status}</span>
-        </footer>
-      </div>
-      <ImageContextMenu menu={imageContextMenu} image={image} onSaveImage={onSaveImage} onClose={closeImageContextMenu} />
-    </div>
-  );
-}
-
-function ImageContextMenu({ menu, image, onSaveImage, onClose }) {
-  if (!menu || !image) return null;
-  return (
-    <div
-      className="image-context-menu"
-      role="group"
-      aria-label="Image actions"
-      style={{ left: menu.x, top: menu.y }}
-      onClick={(event) => event.stopPropagation()}
-      onPointerDown={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <button
-        type="button"
-        onClick={() => {
-          onClose();
-          onSaveImage?.(image);
-        }}
-      >
-        <FileDown size={15} />
-        Save original image
-      </button>
-    </div>
-  );
-}
-
-function OnboardingDialog(props) {
-  return <SettingsDialog {...props} onboarding canClose={Boolean(props.settings?.sourceRoot)} />;
-}
-
-function SettingsDialog({ settings, sourceRoot, setSourceRoot, saving, error, onError, onClose, onSubmit, onboarding = false, canClose = true }) {
-  const [browsing, setBrowsing] = useState(false);
-
-  const browseSourceFolder = useCallback(
-    async () => {
-      setBrowsing(true);
-      onError("");
-      try {
-        const payload = await pickSourceFolder({ initialPath: sourceRoot || settings?.sourceRoot || "" });
-        if (payload.folder?.selectedPath) {
-          setSourceRoot(payload.folder.selectedPath);
-        }
-      } catch (nextError) {
-        onError(nextError.message);
-      } finally {
-        setBrowsing(false);
-      }
-    },
-    [onError, setSourceRoot, settings?.sourceRoot, sourceRoot]
-  );
-
-  useEffect(() => {
-    document.body.classList.add("modal-open");
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && canClose) onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.classList.remove("modal-open");
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [canClose, onClose]);
-
-  return (
-    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label={onboarding ? "Source folder onboarding" : "Settings"}>
-      <form className="settings-dialog" onSubmit={onSubmit}>
-        <header>
-          <div>
-            <Settings size={18} />
-            <h2>{onboarding ? "Choose source folder" : "Settings"}</h2>
-          </div>
-          {canClose && (
-            <button type="button" className="icon-button" aria-label="Close settings" onClick={onClose} disabled={saving}>
-              <X size={18} />
-            </button>
-          )}
-        </header>
-
-        <label className="settings-field" htmlFor="source-folder-input">
-          <span>Source folder</span>
-          <div className="settings-input-row">
-            <input
-              id="source-folder-input"
-              value={sourceRoot}
-              onChange={(event) => setSourceRoot(event.target.value)}
-              disabled={saving || browsing}
-              placeholder="E:\\OpenAI\\Exports"
-              spellCheck={false}
-            />
-            <button type="button" aria-label="Browse source folder" onClick={browseSourceFolder} disabled={saving || browsing}>
-              <FolderOpen size={15} />
-              {browsing ? "Browsing..." : "Browse"}
-            </button>
-          </div>
-        </label>
-
-        <div className="settings-meta">
-          <span>Cache</span>
-          <strong title={settings?.cacheDir ?? ""}>{settings?.cacheDir ?? "-"}</strong>
-        </div>
-
-        {error && <p className="settings-error">{error}</p>}
-
-        <footer>
-          {canClose && (
-            <button type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-          )}
-          <button type="submit" className="primary-button" disabled={saving}>
-            {saving ? "Applying..." : onboarding ? "Start" : "Apply"}
-          </button>
-        </footer>
-      </form>
-    </div>
-  );
-}
-
-function Inspector({ mode, selectedExport, conversation, image, stats, error, onPreviewImage, onSaveImage }) {
-  return (
-    <aside className="inspector">
-      <Panel title="Export" icon={<Info size={17} />}>
-        <dl className="detail-grid">
-          <dt>Name</dt>
-          <dd title={selectedExport?.name ?? ""}>{selectedExport ? formatExportLabel(selectedExport) : "None"}</dd>
-          <dt>Modified</dt>
-          <dd>{formatDate(selectedExport?.modifiedAt)}</dd>
-          <dt>Warnings</dt>
-          <dd>{selectedExport?.warnings?.length ?? 0}</dd>
-        </dl>
-      </Panel>
-
-      {mode === "chat" ? (
-        <>
-          <Panel title="Session details" icon={<MessageSquare size={17} />}>
-            <dl className="detail-grid">
-              <dt>Session ID</dt>
-              <dd>{conversation?.id ?? "-"}</dd>
-              <dt>Messages</dt>
-              <dd>{conversation?.totalMessages ?? 0}</dd>
-              <dt>Model</dt>
-              <dd>{conversation?.model ?? "-"}</dd>
-              <dt>Updated</dt>
-              <dd>{formatDate(conversation?.updatedAt)}</dd>
-            </dl>
-          </Panel>
-          <Panel title="Index totals" icon={<Database size={17} />}>
-            <div className="source-list">
-              <div className="source-row">
-                <span>Conversations</span>
-                <em>{stats?.conversations?.totalConversations ?? 0}</em>
-              </div>
-              <div className="source-row">
-                <span>Messages</span>
-                <em>{stats?.conversations?.totalMessages ?? 0}</em>
-              </div>
-            </div>
-          </Panel>
-        </>
-      ) : (
-        <>
-          <Panel title="Image details" icon={<FileImage size={17} />}>
-            {image && <Thumb exportId={selectedExport?.id} image={image} preview />}
-            {image && (
-              <div className="inspector-actions">
-                <button type="button" onClick={() => onPreviewImage?.(image)} disabled={!image.exists}>
-                  <ZoomIn size={15} />
-                  Original view
-                </button>
-                <button type="button" onClick={() => onSaveImage?.(image)} disabled={!image.exists}>
-                  <FileDown size={15} />
-                  Save original image
-                </button>
-              </div>
-            )}
-            <dl className="detail-grid">
-              <dt>Name</dt>
-              <dd>{image?.displayName ?? "-"}</dd>
-              <dt>MIME</dt>
-              <dd>{image?.mime ?? "-"}</dd>
-              <dt>Size</dt>
-              <dd>{image?.sizeLabel ?? "-"}</dd>
-              <dt>Resolution</dt>
-              <dd>{formatImageResolution(image)}</dd>
-              <dt>Status</dt>
-              <dd>{image?.status ?? "-"}</dd>
-              <dt>File</dt>
-              <dd>{image?.fileRef ?? "-"}</dd>
-            </dl>
-          </Panel>
-          <Panel title="Origin" icon={<Tag size={17} />}>
-            <div className="tag-list">
-              <span>{image?.sourceState ?? "none"}</span>
-              <span>{image?.sourceConversationId ?? "no source chat"}</span>
-            </div>
-          </Panel>
-        </>
-      )}
-
-      <Panel title="Warnings" icon={<AlertTriangle size={17} />} count={error ? "1" : undefined} warning={Boolean(error)}>
-        <p className="warning-copy">{error || selectedExport?.warnings?.join(", ") || "No active warnings."}</p>
-      </Panel>
-    </aside>
-  );
-}
-
-function Thumb({ exportId, image, small = false, preview = false }) {
-  if (!image?.exists || !exportId) {
-    return (
-      <span className={preview ? "inspector-preview tone-amber" : small ? "mini-thumb tone-amber" : "image-thumb tone-amber"}>
-        <FileImage size={small ? 18 : 34} />
-      </span>
-    );
-  }
-  return (
-    <span className={preview ? "inspector-preview real-thumb" : small ? "mini-thumb real-thumb" : "image-thumb real-thumb"}>
-      <img src={assetUrl(exportId, image.fileId)} alt="" loading="lazy" />
-    </span>
-  );
-}
-
-function Panel({ title, icon, count, warning = false, children }) {
-  return (
-    <section className={`utility-panel ${warning ? "warning" : ""}`}>
-      <header>
-        <span>
-          {icon}
-          {title}
-        </span>
-        {count && <em>{count}</em>}
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function mergeByKey(current, next, key) {
-  const merged = [...current];
-  const seen = new Set(current.map((item) => item[key]));
-  for (const item of next) {
-    const value = item[key];
-    if (seen.has(value)) continue;
-    seen.add(value);
-    merged.push(item);
-  }
-  return merged;
-}
-
-createRoot(document.getElementById("root")).render(<App />);
+export { App, AppErrorBoundary };

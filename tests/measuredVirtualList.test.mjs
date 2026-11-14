@@ -106,6 +106,36 @@ function HookHarness({ items, resetKey, itemHeights, onSnapshot }) {
   );
 }
 
+function ConditionalMountHarness({ visible, items, onSnapshot }) {
+  const virtual = useMeasuredVirtualList(items, {
+    estimatedItemSize: 80,
+    overscan: 0,
+    getItemKey: (item) => item.id
+  });
+
+  useEffect(() => {
+    onSnapshot({
+      renderedIds: virtual.items.map(({ item }) => item.id),
+      beforeSize: virtual.beforeSize,
+      afterSize: virtual.afterSize
+    });
+  }, [onSnapshot, virtual.afterSize, virtual.beforeSize, virtual.items]);
+
+  if (!visible) return null;
+  return React.createElement(
+    "div",
+    {
+      ref: (node) => {
+        if (node) patchElementMetrics(node, { height: 120, width: 320 });
+        virtual.containerRef(node);
+      }
+    },
+    React.createElement("div", { "data-before-size": virtual.beforeSize }),
+    virtual.items.map(({ item }) => React.createElement("article", { key: item.id, "data-row-id": item.id })),
+    React.createElement("div", { "data-after-size": virtual.afterSize })
+  );
+}
+
 const previousWindow = globalThis.window;
 const previousDocument = globalThis.document;
 const previousNavigator = globalThis.navigator;
@@ -201,6 +231,49 @@ try {
 
   const totalDisconnects = MockResizeObserver.instances.reduce((total, observer) => total + observer.disconnectCalls, 0);
   assert.ok(totalDisconnects >= MockResizeObserver.instances.length, "Unmount should disconnect every ResizeObserver that was created");
+
+  const conditionalSnapshots = [];
+  const conditionalHost = document.createElement("div");
+  host.appendChild(conditionalHost);
+  const conditionalRoot = createRoot(conditionalHost);
+
+  await act(async () => {
+    conditionalRoot.render(
+      React.createElement(ConditionalMountHarness, {
+        visible: false,
+        items,
+        onSnapshot: (snapshot) => conditionalSnapshots.push(snapshot)
+      })
+    );
+  });
+  await flushFrame();
+
+  await act(async () => {
+    conditionalRoot.render(
+      React.createElement(ConditionalMountHarness, {
+        visible: true,
+        items,
+        onSnapshot: (snapshot) => conditionalSnapshots.push(snapshot)
+      })
+    );
+  });
+  await flushFrame();
+
+  const conditionalScroller = conditionalHost.firstElementChild;
+  assert.ok(conditionalScroller, "Conditionally mounted scroller should render when visible");
+  conditionalScroller.scrollTop = 360;
+  await act(async () => {
+    conditionalScroller.dispatchEvent(new window.Event("scroll"));
+  });
+  await flushFrame();
+
+  const conditionalScrolled = getLatestSnapshot(conditionalSnapshots);
+  assert.equal(conditionalScrolled.renderedIds.includes("row-5"), true, "Scrolling after deferred mount should render scrolled rows");
+  assert.equal(conditionalScrolled.renderedIds.includes("row-0"), false, "Scrolling after deferred mount should unmount top rows");
+
+  await act(async () => {
+    conditionalRoot.unmount();
+  });
 } finally {
   dom.window.close();
   Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: previousWindow });

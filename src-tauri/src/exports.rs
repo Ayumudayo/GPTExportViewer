@@ -100,9 +100,6 @@ pub fn stable_export_id(path: &Path) -> String {
 }
 
 fn system_time_to_iso_like(value: SystemTime) -> String {
-    let millis = value
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    format!("{millis}")
+    chrono::DateTime::<chrono::Utc>::from(value)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

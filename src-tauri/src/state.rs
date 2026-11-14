@@ -1,35 +1,34 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::{Deserialize, Serialize};
-use unicode_normalization::UnicodeNormalization;
-
-use crate::cache::{export_fingerprint, read_json, write_json_atomic, ExportFingerprint};
+use crate::asset_protocol::asset_url;
 use crate::conversations::{
-    load::load_conversation, save::save_original_sessions,
-    summary_index::build_conversation_summary_index,
+    load::{load_conversation, read_conversation_from_jsonl, slice_conversation_page},
+    save::save_original_sessions,
 };
 use crate::errors::{io_error, AppError, AppResult};
 use crate::exports::scan_exports;
-use crate::library::{assets::resolve_asset, index::build_library_index};
+use crate::index_store::{index_export, ConversationLru, IndexedExport};
+use crate::library::assets::resolve_asset_for_item;
 use crate::models::{
-    CacheStatus, Conversation, ConversationIndex, ConversationStats, ConversationSummary,
-    ExportItem, ExportsResponse, LibraryIndex, LibraryResponseItem, LibraryStats, PagedResponse,
-    PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse, RescanExportsResponse,
-    ResolvedAsset, SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse,
-    SettingsResponse, StatsResponse, UpdateSettingsResponse, WindowSize,
+    Conversation, ConversationStats, ConversationSummary, ExportItem, ExportsResponse,
+    LibraryResponseItem, LibraryStats, PagedResponse, PublicExport, PublicSettings,
+    RefreshIndexItem, RefreshIndexResponse, RescanExportsResponse, ResolvedAsset,
+    SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse, SettingsResponse,
+    StatsResponse, UpdateSettingsResponse, WindowSize,
 };
-use crate::paging::page_items;
+use crate::paging::page_indices;
+use crate::search::{filter_conversation_indices, filter_library_indices};
 use crate::settings::{
     read_runtime_settings, resolve_source_root, write_runtime_settings, RuntimeSettings,
 };
 
-const CACHE_META_VERSION: u8 = 2;
-
 #[derive(Debug, Clone)]
 pub struct AppState {
     inner: Arc<Mutex<StateInner>>,
+    index_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    conversation_lru: Arc<Mutex<ConversationLru>>,
 }
 
 #[derive(Debug)]
@@ -39,26 +38,9 @@ struct StateInner {
     saved_sessions_dir: PathBuf,
     settings_file: PathBuf,
     exports: Vec<ExportItem>,
-    indexes: HashMap<String, IndexedExport>,
+    indexes: HashMap<String, Arc<IndexedExport>>,
     selected_export_id: Option<String>,
     window_size: Option<WindowSize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct CacheMeta {
-    version: u8,
-    export_id: String,
-    export_path: PathBuf,
-    generated_at: String,
-    fingerprint: ExportFingerprint,
-}
-
-#[derive(Debug, Clone)]
-struct IndexedExport {
-    conversation_index: ConversationIndex,
-    library_index: LibraryIndex,
-    cache: CacheStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +90,8 @@ impl AppState {
                 selected_export_id,
                 window_size: settings.window_size,
             })),
+            index_locks: Arc::new(Mutex::new(HashMap::new())),
+            conversation_lru: Arc::new(Mutex::new(ConversationLru::default())),
         })
     }
 
@@ -136,18 +120,24 @@ impl AppState {
         let resolved_root = resolve_source_root(Path::new(trimmed))?;
         let exports = scan_exports(&resolved_root)?;
 
-        let mut inner = self.lock()?;
-        inner.source_root = Some(resolved_root);
-        inner.exports = exports;
-        inner.indexes.clear();
-        inner.selected_export_id =
-            reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
-        persist_runtime_settings(&inner)?;
+        let response = {
+            let mut inner = self.lock()?;
+            inner.source_root = Some(resolved_root);
+            inner.exports = exports;
+            inner.indexes.clear();
+            inner.selected_export_id =
+                reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
+            persist_runtime_settings(&inner)?;
 
-        Ok(UpdateSettingsResponse {
-            settings: public_settings(&inner),
-            exports: public_exports(&inner.exports),
-        })
+            UpdateSettingsResponse {
+                settings: public_settings(&inner),
+                exports: public_exports(&inner.exports),
+            }
+        };
+        if let Ok(mut lru) = self.conversation_lru.lock() {
+            lru.clear();
+        }
+        Ok(response)
     }
 
     pub fn rescan_exports_response(&self) -> AppResult<RescanExportsResponse> {
@@ -158,33 +148,44 @@ impl AppState {
                 .clone()
                 .ok_or_else(|| AppError::InvalidSourceRoot("source root not configured".to_string()))?
         };
-        let scan_result =
-            resolve_source_root(&source_root).and_then(|resolved| scan_exports(&resolved).map(|exports| (resolved, exports)));
+        let scan_result = resolve_source_root(&source_root)
+            .and_then(|resolved| scan_exports(&resolved).map(|exports| (resolved, exports)));
         let (resolved_root, exports) = match scan_result {
             Ok(result) => result,
             Err(error) => {
-                let mut inner = self.lock()?;
-                inner.source_root = None;
-                inner.exports.clear();
-                inner.indexes.clear();
-                inner.selected_export_id = None;
-                persist_runtime_settings(&inner)?;
+                {
+                    let mut inner = self.lock()?;
+                    inner.source_root = None;
+                    inner.exports.clear();
+                    inner.indexes.clear();
+                    inner.selected_export_id = None;
+                    persist_runtime_settings(&inner)?;
+                }
+                if let Ok(mut lru) = self.conversation_lru.lock() {
+                    lru.clear();
+                }
                 return Err(error);
             }
         };
 
-        let mut inner = self.lock()?;
-        inner.source_root = Some(resolved_root);
-        inner.exports = exports;
-        inner.indexes.clear();
-        inner.selected_export_id =
-            reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
-        persist_runtime_settings(&inner)?;
+        let response = {
+            let mut inner = self.lock()?;
+            inner.source_root = Some(resolved_root);
+            inner.exports = exports;
+            inner.indexes.clear();
+            inner.selected_export_id =
+                reconcile_selected_export(inner.selected_export_id.clone(), &inner.exports);
+            persist_runtime_settings(&inner)?;
 
-        Ok(RescanExportsResponse {
-            settings: public_settings(&inner),
-            exports: public_exports(&inner.exports),
-        })
+            RescanExportsResponse {
+                settings: public_settings(&inner),
+                exports: public_exports(&inner.exports),
+            }
+        };
+        if let Ok(mut lru) = self.conversation_lru.lock() {
+            lru.clear();
+        }
+        Ok(response)
     }
 
     pub fn update_preferences_response(
@@ -214,14 +215,12 @@ impl AppState {
     }
 
     pub fn get_stats_response(&self, export_id: Option<String>) -> AppResult<StatsResponse> {
-        let mut inner = self.lock()?;
-        let export = requested_export(&inner, export_id)?;
-        let indexed = ensure_index_locked(&mut inner, &export.id, false)?;
+        let (export, indexed) = self.ensure_index(export_id, false)?;
         Ok(StatsResponse {
             export: PublicExport::from(&export),
-            conversations: indexed.conversation_index.stats,
-            library: indexed.library_index.stats,
-            cache: indexed.cache,
+            conversations: indexed.conversation_index.stats.clone(),
+            library: indexed.library_index.stats.clone(),
+            cache: indexed.cache.clone(),
         })
     }
 
@@ -233,20 +232,25 @@ impl AppState {
         cursor: Option<usize>,
         limit: Option<usize>,
     ) -> AppResult<PagedResponse<ConversationSummary, ConversationStats>> {
-        let mut inner = self.lock()?;
-        let export = requested_export(&inner, export_id)?;
-        let indexed = ensure_index_locked(&mut inner, &export.id, false)?;
-        let filtered = filter_conversations(
+        let (export, indexed) = self.ensure_index(export_id, false)?;
+        let matching_indices = filter_conversation_indices(
             &indexed.conversation_index.items,
+            &indexed.conversation_search_list,
             query.as_deref(),
             filter.as_deref(),
         );
-        let page = page_items(&filtered, cursor.unwrap_or(0), limit.unwrap_or(30), 100);
+        let page = page_indices(
+            &matching_indices,
+            cursor.unwrap_or(0),
+            limit.unwrap_or(30),
+            100,
+            |idx| indexed.conversation_index.items[idx].clone(),
+        );
         Ok(PagedResponse {
             export: PublicExport::from(&export),
             items: page.items,
             page: page.page,
-            stats: indexed.conversation_index.stats,
+            stats: indexed.conversation_index.stats.clone(),
         })
     }
 
@@ -258,27 +262,31 @@ impl AppState {
         cursor: Option<usize>,
         limit: Option<usize>,
     ) -> AppResult<PagedResponse<LibraryResponseItem, LibraryStats>> {
-        let mut inner = self.lock()?;
-        let export = requested_export(&inner, export_id)?;
-        let indexed = ensure_index_locked(&mut inner, &export.id, false)?;
-        let filtered = filter_library(
+        let (export, indexed) = self.ensure_index(export_id, false)?;
+        let matching_indices = filter_library_indices(
             &indexed.library_index.items,
+            &indexed.library_search_texts,
             query.as_deref(),
             filter.as_deref(),
         );
-        let with_urls: Vec<_> = filtered
-            .into_iter()
-            .map(|item| LibraryResponseItem {
-                asset_url: asset_url(&export.id, &item.file_id),
-                item,
-            })
-            .collect();
-        let page = page_items(&with_urls, cursor.unwrap_or(0), limit.unwrap_or(60), 120);
+        let page = page_indices(
+            &matching_indices,
+            cursor.unwrap_or(0),
+            limit.unwrap_or(60),
+            120,
+            |idx| {
+                let item = indexed.library_index.items[idx].clone();
+                LibraryResponseItem {
+                    asset_url: asset_url(&export.id, &item.file_id),
+                    item,
+                }
+            },
+        );
         Ok(PagedResponse {
             export: PublicExport::from(&export),
             items: page.items,
             page: page.page,
-            stats: indexed.library_index.stats,
+            stats: indexed.library_index.stats.clone(),
         })
     }
 
@@ -289,33 +297,61 @@ impl AppState {
         start: Option<usize>,
         limit: Option<usize>,
     ) -> AppResult<Conversation> {
-        let inner = self.lock()?;
-        let export = requested_export(&inner, export_id)?;
-        let cache_dir = inner.cache_dir.clone();
-        drop(inner);
-        load_conversation(
-            &export,
-            &conversation_id,
-            &cache_dir,
-            start.unwrap_or(0),
-            limit.unwrap_or(100),
-        )?
-        .ok_or(AppError::ConversationNotFound)
+        let (export, indexed) = self.ensure_index(export_id, false)?;
+        let start_val = start.unwrap_or(0);
+        let limit_val = limit.unwrap_or(100);
+
+        if let Ok(mut lru) = self.conversation_lru.lock() {
+            if let Some(conv) = lru.get(&export.id, &conversation_id) {
+                return Ok(slice_conversation_page(&conv, start_val, limit_val));
+            }
+        }
+
+        if let Some(&(offset, len)) = indexed.conversation_offsets.get(&conversation_id) {
+            if indexed.conversation_jsonl_path.is_file() {
+                let conv = Arc::new(read_conversation_from_jsonl(
+                    &indexed.conversation_jsonl_path,
+                    offset,
+                    len,
+                )?);
+                let page = slice_conversation_page(&conv, start_val, limit_val);
+                if let Ok(mut lru) = self.conversation_lru.lock() {
+                    lru.insert(export.id.clone(), conversation_id, conv);
+                }
+                return Ok(page);
+            }
+        }
+
+        if indexed.conversation_jsonl_path.is_file() {
+            return Err(AppError::ConversationNotFound);
+        }
+
+        let cache_dir = {
+            let inner = self.lock()?;
+            inner.cache_dir.clone()
+        };
+        load_conversation(&export, &conversation_id, &cache_dir, start_val, limit_val)?
+            .ok_or(AppError::ConversationNotFound)
     }
 
     pub fn refresh_index_response(
         &self,
         export_id: Option<String>,
     ) -> AppResult<RefreshIndexResponse> {
-        let mut inner = self.lock()?;
-        let targets = if let Some(export_id) = export_id {
-            vec![requested_export(&inner, Some(export_id))?]
-        } else {
-            inner.exports.clone()
+        let targets = {
+            let inner = self.lock()?;
+            if let Some(export_id) = export_id {
+                vec![requested_export(&inner, Some(export_id))?]
+            } else {
+                inner.exports.clone()
+            }
         };
-        let mut indexed = Vec::new();
+        let mut indexed = Vec::with_capacity(targets.len());
         for export in targets {
-            let refreshed = ensure_index_locked(&mut inner, &export.id, true)?;
+            let (_, refreshed) = self.ensure_index(Some(export.id.clone()), true)?;
+            if let Ok(mut lru) = self.conversation_lru.lock() {
+                lru.remove_export(&export.id);
+            }
             indexed.push(RefreshIndexItem {
                 export_id: export.id,
                 cache_hit: refreshed.cache.hit,
@@ -368,10 +404,8 @@ impl AppState {
     }
 
     pub fn read_asset_payload(&self, export_id: &str, file_id: &str) -> AppResult<AssetPayload> {
-        let mut inner = self.lock()?;
         let (_export, resolved) =
-            resolve_asset_for_export_locked(&mut inner, Some(export_id.to_string()), file_id)?;
-        drop(inner);
+            self.resolve_asset_for_export(Some(export_id.to_string()), file_id)?;
 
         let bytes = std::fs::read(&resolved.file_path)
             .map_err(|error| io_error(&resolved.file_path, error))?;
@@ -382,13 +416,29 @@ impl AppState {
         })
     }
 
+    pub fn read_thumbnail_payload(&self, export_id: &str, file_id: &str) -> AppResult<AssetPayload> {
+        let (export, resolved) =
+            self.resolve_asset_for_export(Some(export_id.to_string()), file_id)?;
+        let cache_dir = {
+            let inner = self.lock()?;
+            inner.cache_dir.clone()
+        };
+        let export_cache_dir = cache_dir.join(&export.id);
+        let (mime_type, bytes) =
+            crate::library::thumbnails::read_or_create_thumbnail(&resolved, &export_cache_dir)?;
+        Ok(AssetPayload {
+            file_name: resolved.file_name,
+            mime_type,
+            bytes,
+        })
+    }
+
     pub fn original_image_metadata(
         &self,
         export_id: Option<String>,
         file_id: &str,
     ) -> AppResult<OriginalImageMetadata> {
-        let mut inner = self.lock()?;
-        let (_export, resolved) = resolve_asset_for_export_locked(&mut inner, export_id, file_id)?;
+        let (_export, resolved) = self.resolve_asset_for_export(export_id, file_id)?;
         Ok(OriginalImageMetadata {
             file_name: resolved.file_name,
             mime_type: resolved.mime_type,
@@ -401,9 +451,7 @@ impl AppState {
         file_id: String,
         destination_path: PathBuf,
     ) -> AppResult<SaveOriginalImageResponse> {
-        let mut inner = self.lock()?;
-        let (_export, resolved) = resolve_asset_for_export_locked(&mut inner, export_id, &file_id)?;
-        drop(inner);
+        let (_export, resolved) = self.resolve_asset_for_export(export_id, &file_id)?;
 
         if let Some(parent) = destination_path
             .parent()
@@ -422,6 +470,83 @@ impl AppState {
             bytes_written,
             canceled: false,
         })
+    }
+
+    fn resolve_asset_for_export(
+        &self,
+        export_id: Option<String>,
+        file_id: &str,
+    ) -> AppResult<(ExportItem, ResolvedAsset)> {
+        let (export, indexed) = self.ensure_index(export_id, false)?;
+        let item = indexed
+            .library_by_file_id
+            .get(file_id)
+            .and_then(|&idx| indexed.library_index.items.get(idx));
+        let resolved = resolve_asset_for_item(&export, file_id, item)?;
+        Ok((export, resolved))
+    }
+
+    fn ensure_index(
+        &self,
+        export_id: Option<String>,
+        force: bool,
+    ) -> AppResult<(ExportItem, Arc<IndexedExport>)> {
+        let export = {
+            let inner = self.lock()?;
+            let export = requested_export(&inner, export_id)?;
+            if !force {
+                if let Some(indexed) = inner.indexes.get(&export.id) {
+                    return Ok((export, Arc::clone(indexed)));
+                }
+            }
+            export
+        };
+
+        let build_lock = self.index_build_lock(&export.id)?;
+        let _guard = build_lock
+            .lock()
+            .map_err(|_| AppError::CacheUnavailable("index build lock poisoned".to_string()))?;
+
+        let cache_dir = {
+            let inner = self.lock()?;
+            let current_export = requested_export(&inner, Some(export.id.clone()))?;
+            if current_export.path != export.path {
+                return Err(AppError::ExportNotFound);
+            }
+            if !force {
+                if let Some(indexed) = inner.indexes.get(&export.id) {
+                    return Ok((current_export, Arc::clone(indexed)));
+                }
+            }
+            inner.cache_dir.clone()
+        };
+
+        let indexed = Arc::new(index_export(&export, &cache_dir, force)?);
+
+        let mut inner = self.lock()?;
+        let still_present = inner
+            .exports
+            .iter()
+            .any(|item| item.id == export.id && item.path == export.path);
+        if !still_present {
+            return Err(AppError::ExportNotFound);
+        }
+        inner
+            .indexes
+            .insert(export.id.clone(), Arc::clone(&indexed));
+        Ok((export, indexed))
+    }
+
+    fn index_build_lock(&self, export_id: &str) -> AppResult<Arc<Mutex<()>>> {
+        let mut locks = self
+            .index_locks
+            .lock()
+            .map_err(|_| AppError::CacheUnavailable("index lock map poisoned".to_string()))?;
+        Ok(Arc::clone(
+            locks
+                .entry(export_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        ))
     }
 
     fn lock(&self) -> AppResult<MutexGuard<'_, StateInner>> {
@@ -478,95 +603,6 @@ fn requested_export(inner: &StateInner, export_id: Option<String>) -> AppResult<
         .ok_or(AppError::ExportNotFound)
 }
 
-fn resolve_asset_for_export_locked(
-    inner: &mut StateInner,
-    export_id: Option<String>,
-    file_id: &str,
-) -> AppResult<(ExportItem, ResolvedAsset)> {
-    let export = requested_export(inner, export_id)?;
-    let indexed = ensure_index_locked(inner, &export.id, false)?;
-    let resolved = resolve_asset(&export, file_id, &indexed.library_index.items)?;
-    Ok((export, resolved))
-}
-
-fn ensure_index_locked(
-    inner: &mut StateInner,
-    export_id: &str,
-    force: bool,
-) -> AppResult<IndexedExport> {
-    if !force {
-        if let Some(indexed) = inner.indexes.get(export_id) {
-            return Ok(indexed.clone());
-        }
-    }
-
-    let export = requested_export(inner, Some(export_id.to_string()))?;
-    let indexed = index_export(&export, &inner.cache_dir, force)?;
-    inner.indexes.insert(export_id.to_string(), indexed.clone());
-    Ok(indexed)
-}
-
-fn index_export(export: &ExportItem, cache_dir: &Path, force: bool) -> AppResult<IndexedExport> {
-    let export_cache_dir = cache_dir.join(&export.id);
-    let meta_file = export_cache_dir.join("meta.json");
-    let conversations_file = export_cache_dir.join("conversation-summaries.json");
-    let library_file = export_cache_dir.join("library-images.json");
-    let fingerprint = export_fingerprint(export)?;
-
-    if !force {
-        if let Some(meta) = read_json::<CacheMeta>(&meta_file)? {
-            if meta.version == CACHE_META_VERSION
-                && meta.export_id == export.id
-                && meta.fingerprint == fingerprint
-            {
-                let conversation_index = read_json::<ConversationIndex>(&conversations_file)?;
-                let library_index = read_json::<LibraryIndex>(&library_file)?;
-                if let (Some(conversation_index), Some(library_index)) =
-                    (conversation_index, library_index)
-                {
-                    return Ok(IndexedExport {
-                        conversation_index,
-                        library_index,
-                        cache: CacheStatus {
-                            hit: true,
-                            dir: export_cache_dir,
-                        },
-                    });
-                }
-            }
-        }
-    }
-
-    let conversation_index = build_conversation_summary_index(export)?;
-    let conversation_ids: HashSet<_> = conversation_index
-        .items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    let library_index = build_library_index(export, &conversation_ids)?;
-    write_json_atomic(&conversations_file, &conversation_index)?;
-    write_json_atomic(&library_file, &library_index)?;
-    write_json_atomic(
-        &meta_file,
-        &CacheMeta {
-            version: CACHE_META_VERSION,
-            export_id: export.id.clone(),
-            export_path: export.path.clone(),
-            generated_at: crate::time::generated_at(),
-            fingerprint,
-        },
-    )?;
-
-    Ok(IndexedExport {
-        conversation_index,
-        library_index,
-        cache: CacheStatus {
-            hit: false,
-            dir: export_cache_dir,
-        },
-    })
-}
-
 fn public_settings(inner: &StateInner) -> PublicSettings {
     PublicSettings {
         source_root: inner.source_root.clone(),
@@ -579,86 +615,4 @@ fn public_settings(inner: &StateInner) -> PublicSettings {
 
 fn public_exports(exports: &[ExportItem]) -> Vec<PublicExport> {
     exports.iter().map(PublicExport::from).collect()
-}
-
-fn filter_conversations(
-    items: &[ConversationSummary],
-    query: Option<&str>,
-    filter: Option<&str>,
-) -> Vec<ConversationSummary> {
-    let query = normalized_query(query);
-    let filter = filter.unwrap_or("all");
-    items
-        .iter()
-        .filter(|item| {
-            if filter == "archived" && !item.archived {
-                return false;
-            }
-            if filter == "active" && item.archived {
-                return false;
-            }
-            let Some(query) = query.as_deref() else {
-                return true;
-            };
-            [
-                Some(item.title.as_str()),
-                Some(item.preview.as_str()),
-                item.model.as_deref(),
-                Some(item.id.as_str()),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| normalized_search_text(value).contains(query))
-        })
-        .cloned()
-        .collect()
-}
-
-fn filter_library(
-    items: &[crate::models::LibraryItem],
-    query: Option<&str>,
-    filter: Option<&str>,
-) -> Vec<crate::models::LibraryItem> {
-    let query = normalized_query(query);
-    let filter = filter.unwrap_or("all");
-    items
-        .iter()
-        .filter(|item| {
-            if filter != "all" && item.source_state != filter {
-                return false;
-            }
-            let Some(query) = query.as_deref() else {
-                return true;
-            };
-            [
-                Some(item.display_name.as_str()),
-                Some(item.mime.as_str()),
-                Some(item.file_id.as_str()),
-                item.source_conversation_id.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| normalized_search_text(value).contains(query))
-        })
-        .cloned()
-        .collect()
-}
-
-fn normalized_query(query: Option<&str>) -> Option<String> {
-    query
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalized_search_text)
-}
-
-fn normalized_search_text(value: &str) -> String {
-    value.to_lowercase().nfc().collect()
-}
-
-fn asset_url(export_id: &str, file_id: &str) -> String {
-    format!(
-        "http://gpt-export-asset.localhost/library/{}/{}",
-        percent_encoding::utf8_percent_encode(export_id, percent_encoding::NON_ALPHANUMERIC),
-        percent_encoding::utf8_percent_encode(file_id, percent_encoding::NON_ALPHANUMERIC)
-    )
 }

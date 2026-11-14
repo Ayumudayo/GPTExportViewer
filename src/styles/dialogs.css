@@ -1,0 +1,349 @@
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--backdrop);
+  backdrop-filter: blur(10px);
+}
+
+.session-context-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 236px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: var(--shadow);
+}
+
+.session-context-menu button {
+  min-width: 0;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.session-context-menu button:hover,
+.session-context-menu button:focus-visible {
+  background: var(--button-hover);
+  outline: 0;
+}
+
+.session-context-menu button:first-child {
+  color: var(--green-dark);
+}
+
+.session-context-menu button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-context-menu-close {
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+}
+
+.image-context-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 196px;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  box-shadow: var(--shadow);
+}
+
+.image-context-menu button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.image-context-menu button:hover,
+.image-context-menu button:focus-visible {
+  background: var(--green-soft);
+  color: var(--green-dark);
+  outline: 0;
+}
+
+.image-context-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.export-progress-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--backdrop);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.export-progress-dialog {
+  width: min(520px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.export-progress-dialog header,
+.export-progress-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.export-progress-dialog header > div,
+.export-progress-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-progress-dialog h2 {
+  margin: 0;
+  font-size: 16.5px;
+}
+
+.progress-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), var(--green-dark));
+  transition: width 140ms ease;
+}
+
+.export-progress-count,
+.export-progress-path {
+  margin: 0;
+  font-size: 13px;
+}
+
+.export-progress-count {
+  color: var(--muted);
+}
+
+.export-progress-path {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel-soft);
+  word-break: break-word;
+}
+
+.dialog-error {
+  margin: 0;
+}
+
+.export-progress-dialog footer {
+  justify-content: flex-end;
+}
+
+.export-progress-dialog footer button {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
+.settings-dialog {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.settings-dialog header,
+.settings-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-dialog header > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-dialog h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-field span,
+.settings-meta span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-field input {
+  width: 100%;
+  height: 40px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--code-bg);
+}
+
+.settings-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.settings-input-row button {
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
+.settings-meta {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.settings-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.settings-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  background: var(--amber-soft);
+  font-size: 13px;
+}
+
+.settings-dialog footer {
+  justify-content: flex-end;
+}
+
+.settings-dialog footer button {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
+.app-crash-fallback {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.app-crash-card {
+  width: min(480px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 22px 24px;
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.app-crash-card h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.app-crash-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.app-crash-card button {
+  justify-self: start;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(16, 163, 127, 0.36);
+  border-radius: var(--radius-sm);
+  background: var(--green-soft);
+  color: var(--green-dark);
+  font-size: 13px;
+  font-weight: 600;
+}
