@@ -1,0 +1,324 @@
+.gallery-window {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 26px;
+  background: var(--panel);
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 14px;
+}
+
+.image-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius);
+  text-align: left;
+  background: var(--panel-soft);
+  contain: layout paint;
+}
+
+.image-card.selected {
+  border-color: rgba(16, 163, 127, 0.62);
+  background: var(--selected-bg);
+  box-shadow: inset 0 0 0 1px rgba(16, 163, 127, 0.2);
+}
+
+.image-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, 0.86);
+  overflow: hidden;
+  position: relative;
+}
+
+.image-thumb::before,
+.inspector-preview::before,
+.mini-thumb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 44%),
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.06) 0,
+      rgba(255, 255, 255, 0.06) 1px,
+      transparent 1px,
+      transparent 9px
+    );
+}
+
+.image-thumb svg {
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 1px 10px rgba(0, 0, 0, 0.28));
+}
+
+.real-thumb::before,
+.real-image::before {
+  display: none;
+}
+
+.image-thumb img,
+.mini-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center center;
+}
+
+.inspector-preview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.lightbox-image img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.tone-amber {
+  background: linear-gradient(145deg, #5a3c12, #2f2a1b);
+}
+
+.image-card-copy {
+  min-width: 0;
+}
+
+.image-card-copy strong,
+.image-card-copy em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-card-copy strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.image-card-copy em {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.origin-chip {
+  justify-self: start;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--pill-bg);
+  font-size: 11px;
+}
+
+.origin-chip.linked {
+  border-color: rgba(16, 163, 127, 0.4);
+  color: var(--green-dark);
+  background: var(--green-soft);
+}
+
+.gallery-window > .auto-load-sentinel {
+  width: fit-content;
+  margin: 18px auto 2px;
+}
+
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(4, 6, 9, 0.88);
+  backdrop-filter: blur(10px);
+}
+
+.lightbox-shell {
+  width: min(var(--lightbox-width, 1320px), calc(100vw - 36px));
+  height: min(var(--lightbox-height, 900px), calc(100vh - 36px));
+  min-height: min(300px, calc(100vh - 36px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-lg);
+  background: #080a0c;
+  color: #eceff4;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.52);
+  overflow: hidden;
+}
+
+.lightbox-header,
+.lightbox-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 18px;
+  background: rgba(16, 19, 24, 0.96);
+}
+
+.lightbox-header {
+  min-height: 62px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.lightbox-header strong,
+.lightbox-header span {
+  display: block;
+}
+
+.lightbox-header strong {
+  font-size: 15px;
+}
+
+.lightbox-header span,
+.lightbox-footer {
+  color: #94a0ad;
+  font-size: 12px;
+}
+
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lightbox-actions button,
+.lightbox-step {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-color: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  color: #eceff4;
+}
+
+.lightbox-stage {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.lightbox-step {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  transform: translateY(-50%);
+  color: #d6dee8;
+  background: rgba(16, 19, 24, 0.82);
+}
+
+.lightbox-step.previous {
+  left: 12px;
+}
+
+.lightbox-step.next {
+  right: 12px;
+}
+
+.lightbox-step:disabled {
+  opacity: 0.32;
+  pointer-events: none;
+}
+
+.lightbox-image {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: var(--lightbox-aspect, auto);
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+  position: relative;
+}
+
+.lightbox-image svg {
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.38));
+}
+
+.lightbox-missing {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  color: #94a0ad;
+}
+
+.lightbox-missing svg {
+  color: #f59e0b;
+}
+
+.lightbox-missing strong {
+  color: #eceff4;
+  font-size: 15px;
+}
+
+.lightbox-missing span {
+  max-width: min(460px, 100%);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.lightbox-footer {
+  min-height: 44px;
+  justify-content: flex-start;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  position: relative;
+  z-index: 1;
+}
+
+.lightbox-footer span:not(:last-child)::after {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  margin-left: 14px;
+  background: rgba(255, 255, 255, 0.14);
+  vertical-align: middle;
+}

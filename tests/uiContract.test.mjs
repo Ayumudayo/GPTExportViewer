@@ -1,30 +1,57 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import vm from "node:vm";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownContent, countMarkdownHighlightMatches } from "../src/markdownRenderer.js";
+import { clamp, clampPopupPosition, getNextDialogFocusIndex } from "../src/utils/layout.js";
+import { formatImageResolution, lightboxSizeStyle } from "../src/utils/media.js";
+import { reconcileConversationSelection, selectConversationRange, toggleSelection } from "../src/utils/selection.js";
 
-const styles = await readFile("src/styles.css", "utf8");
-const baseStyles = styles.slice(0, styles.indexOf("@media"));
-const main = await readFile("src/main.jsx", "utf8");
+async function readCssBundle(entryFile) {
+  const raw = (await readFile(entryFile, "utf8")).replace(/\r\n/g, "\n");
+  const dir = path.dirname(entryFile);
+  const lines = raw.split("\n");
+  const resolved = [];
+  for (const line of lines) {
+    const match = /^\s*@import\s+["']([^"']+)["']\s*;\s*$/.exec(line);
+    if (match) {
+      resolved.push(await readCssBundle(path.join(dir, match[1])));
+    } else {
+      resolved.push(line);
+    }
+  }
+  return resolved.join("\n");
+}
+
+async function readDirectorySources(dirPath) {
+  const entries = (await readdir(dirPath, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && /\.(?:js|jsx)$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  return Promise.all(entries.map((name) => readFile(path.join(dirPath, name), "utf8")));
+}
+
+async function readFrontendSource() {
+  const parts = [
+    await readFile("src/main.jsx", "utf8"),
+    await readFile("src/constants.js", "utf8"),
+    ...(await readDirectorySources("src/utils")),
+    ...(await readDirectorySources("src/hooks")),
+    ...(await readDirectorySources("src/components"))
+  ];
+  return parts.join("\n").replace(/\r\n/g, "\n");
+}
+
+const styles = await readCssBundle("src/styles.css");
+const mediaStart = styles.indexOf("@media");
+assert.ok(mediaStart > 0, "Styles should include base rules before @media queries");
+const baseStyles = styles.slice(0, mediaStart);
+const main = await readFrontendSource();
 const chatReaderHelpers = await readFile("src/chatReaderHelpers.js", "utf8");
 const measuredVirtualList = await readFile("src/measuredVirtualList.js", "utf8");
 const apiClient = await readFile("src/data/apiClient.js", "utf8");
 const tauriClient = await readFile("src/data/tauriApiClient.js", "utf8");
-
-function extractFunctionSource(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} should be declared as a pure helper`);
-  const bodyStart = source.indexOf("{", start);
-  let depth = 0;
-  for (let index = bodyStart; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    if (source[index] === "}") depth -= 1;
-    if (depth === 0) return source.slice(start, index + 1);
-  }
-  throw new Error(`Could not extract ${name}`);
-}
 
 function extractCssRule(source, selector) {
   const start = source.indexOf(selector);
@@ -39,77 +66,32 @@ function extractCssRule(source, selector) {
   throw new Error(`Could not extract ${selector}`);
 }
 
-function loadSelectionHelpers() {
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(
-    [
-      extractFunctionSource(main, "toggleSelection"),
-      extractFunctionSource(main, "selectConversationRange"),
-      extractFunctionSource(main, "reconcileConversationSelection"),
-      "helpers = { toggleSelection, selectConversationRange, reconcileConversationSelection };"
-    ].join("\n"),
-    context
-  );
-  return context.helpers;
-}
-
-function loadDialogFocusHelpers() {
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(
-    [
-      extractFunctionSource(main, "getNextDialogFocusIndex"),
-      "helpers = { getNextDialogFocusIndex };"
-    ].join("\n"),
-    context
-  );
-  return context.helpers;
-}
-
-function loadImageDisplayHelpers() {
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(
-    [
-      extractFunctionSource(main, "formatImageResolution"),
-      extractFunctionSource(main, "lightboxSizeStyle"),
-      "helpers = { formatImageResolution, lightboxSizeStyle };"
-    ].join("\n"),
-    context
-  );
-  return context.helpers;
-}
-
-const selectionHelpers = loadSelectionHelpers();
-const dialogFocusHelpers = loadDialogFocusHelpers();
-const imageDisplayHelpers = loadImageDisplayHelpers();
 const helperConversations = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-assert.deepEqual(plain(selectionHelpers.toggleSelection(["a", "b"], "b")), ["a"], "Ctrl/Cmd toggle should remove only the requested export-selection id");
-assert.deepEqual(plain(selectionHelpers.toggleSelection(["a"], "c")), ["a", "c"], "Ctrl/Cmd toggle should append a missing export-selection id");
-assert.deepEqual(plain(selectionHelpers.selectConversationRange(helperConversations, "b", "d")), ["b", "c", "d"], "Shift range should include anchor and target");
-assert.deepEqual(plain(selectionHelpers.selectConversationRange(helperConversations, "missing", "c")), ["c"], "Shift range should fall back to the target when the anchor is stale");
+assert.deepEqual(plain(toggleSelection(["a", "b"], "b")), ["a"], "Ctrl/Cmd toggle should remove only the requested export-selection id");
+assert.deepEqual(plain(toggleSelection(["a"], "c")), ["a", "c"], "Ctrl/Cmd toggle should append a missing export-selection id");
+assert.deepEqual(plain(selectConversationRange(helperConversations, "b", "d")), ["b", "c", "d"], "Shift range should include anchor and target");
+assert.deepEqual(plain(selectConversationRange(helperConversations, "missing", "c")), ["c"], "Shift range should fall back to the target when the anchor is stale");
 assert.deepEqual(
-  plain(selectionHelpers.reconcileConversationSelection(helperConversations, ["a", "x", "c"], "x")),
+  plain(reconcileConversationSelection(helperConversations, ["a", "x", "c"], "x")),
   { selectedConversationIds: ["a", "c"], lastSelectedConversationId: "" },
   "Selection reconciliation should prune stale export ids and stale range anchor ids"
 );
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(0, 0, false), -1, "Dialog focus helper should fall back to the dialog itself when there are no focusable controls");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(-1, 3, false), 0, "Dialog focus helper should start from the first control on forward Tab");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(-1, 3, true), 2, "Dialog focus helper should start from the last control on reverse Tab");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(2, 3, false), 0, "Dialog focus helper should wrap forward Tab to the first control");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(0, 3, true), 2, "Dialog focus helper should wrap reverse Tab to the last control");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(1, 3, false), 2, "Dialog focus helper should advance to the next control within bounds");
-assert.equal(dialogFocusHelpers.getNextDialogFocusIndex(1, 3, true), 0, "Dialog focus helper should move backward within bounds");
-assert.equal(imageDisplayHelpers.formatImageResolution({ width: 1024, height: 1536 }), "1024x1536", "Image resolution helper should format pixel dimensions");
-assert.equal(imageDisplayHelpers.formatImageResolution({}), "Unknown resolution", "Image resolution helper should handle missing dimensions");
-assert.equal(imageDisplayHelpers.lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-aspect"], "1024 / 1536", "Lightbox sizing should preserve the original image aspect ratio");
-assert.match(imageDisplayHelpers.lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-width"], /px$/, "Lightbox sizing should emit a concrete preferred width");
-assert.match(imageDisplayHelpers.lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-height"], /px$/, "Lightbox sizing should emit a concrete preferred height");
-assert.ok(Number.parseInt(imageDisplayHelpers.lightboxSizeStyle({ width: 2048, height: 1152 })["--lightbox-width"], 10) >= 1520, "Large landscape images should get a wider preferred lightbox");
-assert.ok(Number.parseInt(imageDisplayHelpers.lightboxSizeStyle({ width: 2048, height: 1152 })["--lightbox-height"], 10) >= 1000, "Large landscape images should get a taller preferred lightbox");
+assert.equal(getNextDialogFocusIndex(0, 0, false), -1, "Dialog focus helper should fall back to the dialog itself when there are no focusable controls");
+assert.equal(getNextDialogFocusIndex(-1, 3, false), 0, "Dialog focus helper should start from the first control on forward Tab");
+assert.equal(getNextDialogFocusIndex(-1, 3, true), 2, "Dialog focus helper should start from the last control on reverse Tab");
+assert.equal(getNextDialogFocusIndex(2, 3, false), 0, "Dialog focus helper should wrap forward Tab to the first control");
+assert.equal(getNextDialogFocusIndex(0, 3, true), 2, "Dialog focus helper should wrap reverse Tab to the last control");
+assert.equal(getNextDialogFocusIndex(1, 3, false), 2, "Dialog focus helper should advance to the next control within bounds");
+assert.equal(getNextDialogFocusIndex(1, 3, true), 0, "Dialog focus helper should move backward within bounds");
+assert.equal(formatImageResolution({ width: 1024, height: 1536 }), "1024x1536", "Image resolution helper should format pixel dimensions");
+assert.equal(formatImageResolution({}), "Unknown resolution", "Image resolution helper should handle missing dimensions");
+assert.equal(lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-aspect"], "1024 / 1536", "Lightbox sizing should preserve the original image aspect ratio");
+assert.match(lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-width"], /px$/, "Lightbox sizing should emit a concrete preferred width");
+assert.match(lightboxSizeStyle({ width: 1024, height: 1536 })["--lightbox-height"], /px$/, "Lightbox sizing should emit a concrete preferred height");
+assert.ok(Number.parseInt(lightboxSizeStyle({ width: 2048, height: 1152 })["--lightbox-width"], 10) >= 1520, "Large landscape images should get a wider preferred lightbox");
+assert.ok(Number.parseInt(lightboxSizeStyle({ width: 2048, height: 1152 })["--lightbox-height"], 10) >= 1000, "Large landscape images should get a taller preferred lightbox");
 
 assert.equal(main.includes('aria-label="Settings"'), true, "Settings should be a real, reachable control");
 assert.equal(main.includes("function SettingsDialog"), true, "Settings should render a real dialog instead of a placeholder");
@@ -215,7 +197,7 @@ assert.equal(main.includes("loadingMoreKeyRef"), true, "Automatic load-more requ
 assert.equal(main.includes("latestLoadStateRef"), true, "Automatic load-more responses should be checked against the latest selection and filters before merging");
 assert.match(main, /current\.id !== payload\.id\) return current;/, "Stale message-page responses should be dropped instead of replacing the active conversation");
 assert.equal(main.includes("function useVirtualList"), true, "Long vertical lists should unmount offscreen rows");
-assert.equal(main.includes('from "./measuredVirtualList.js"'), true, "ChatReader should import the measured virtual list hook from a dedicated module");
+assert.match(main, /from "\.\.?\/measuredVirtualList\.js"/, "ChatReader should import the measured virtual list hook from a dedicated module");
 assert.equal(measuredVirtualList.includes("export function useMeasuredVirtualList"), true, "Variable-height chat rows should use a measured virtual list");
 assert.equal(measuredVirtualList.includes("export function useScrollViewport"), true, "Measured virtual list module should own scroll viewport tracking");
 assert.equal(main.includes("function useVirtualGrid"), true, "The image grid should unmount offscreen cards");
@@ -349,34 +331,22 @@ assert.match(lightboxStageRule, /overflow:\s*hidden;/, "Lightbox stage should cl
 assert.match(baseStyles, /(?:^|\n)\.lightbox-footer\s*\{[^}]*min-height:\s*44px;[^}]*position:\s*relative;[^}]*\}/, "Lightbox footer should reserve its own row and paint above the stage boundary");
 assert.match(styles, /\.lightbox-step\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?\}/, "Lightbox navigation buttons should overlay the image area instead of reserving side columns");
 
-{
-  const context = {};
-  vm.createContext(context);
-  vm.runInContext(
-    [
-      extractFunctionSource(main, "clamp"),
-      extractFunctionSource(main, "clampPopupPosition"),
-      "helpers = { clampPopupPosition };"
-    ].join("\n"),
-    context
-  );
-  const { clampPopupPosition } = context.helpers;
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(clampPopupPosition(1250, 700, 240, 48, 1280, 720, 12))),
-    { x: 1028, y: 660 },
-    "Popup clamping should pull bottom-right overflow back inside viewport margins"
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(clampPopupPosition(-20, 2, 240, 48, 1280, 720, 12))),
-    { x: 12, y: 12 },
-    "Popup clamping should respect minimum top-left margins"
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(clampPopupPosition(120, 200, 240, 48, 1280, 720, 12))),
-    { x: 120, y: 200 },
-    "Popup clamping should preserve valid in-bounds coordinates"
-  );
-}
+assert.equal(clamp(15, 0, 10), 10, "clamp should cap values above maximum");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(clampPopupPosition(1250, 700, 240, 48, 1280, 720, 12))),
+  { x: 1028, y: 660 },
+  "Popup clamping should pull bottom-right overflow back inside viewport margins"
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(clampPopupPosition(-20, 2, 240, 48, 1280, 720, 12))),
+  { x: 12, y: 12 },
+  "Popup clamping should respect minimum top-left margins"
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(clampPopupPosition(120, 200, 240, 48, 1280, 720, 12))),
+  { x: 120, y: 200 },
+  "Popup clamping should preserve valid in-bounds coordinates"
+);
 
 {
   const markdownHtml = renderToStaticMarkup(
