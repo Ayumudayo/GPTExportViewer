@@ -318,11 +318,11 @@ fn commands_refresh_index_rebuilds_single_and_all_exports() {
 
     let one = state.refresh_index_response(Some(export_id)).unwrap();
     assert_eq!(one.indexed.len(), 1);
-    assert_eq!(one.indexed[0].cache_hit, false);
+    assert!(!one.indexed[0].cache_hit);
 
     let all = state.refresh_index_response(None).unwrap();
     assert_eq!(all.indexed.len(), 1);
-    assert_eq!(all.indexed[0].cache_hit, false);
+    assert!(!all.indexed[0].cache_hit);
 }
 
 #[test]

@@ -355,11 +355,11 @@ fn library_index_keeps_images_and_resolves_source_states() {
         .unwrap();
     assert_eq!(linked.display_name, "renamed library.png");
     assert_eq!(linked.source_state, "linked");
-    assert_eq!(linked.exists, true);
+    assert!(linked.exists);
     assert_eq!(linked.width, Some(1024));
     assert_eq!(linked.height, Some(1536));
     assert_eq!(missing.source_state, "missing-source-chat");
-    assert_eq!(missing.exists, false);
+    assert!(!missing.exists);
     assert_eq!(missing.width, None);
     assert_eq!(missing.height, None);
     assert_eq!(index.stats.total_images, 2);
