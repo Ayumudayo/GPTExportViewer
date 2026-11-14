@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MarkdownContent, countMarkdownHighlightMatches } from "../src/markdownRenderer.js";
 
 const styles = await readFile("src/styles.css", "utf8");
 const baseStyles = styles.slice(0, styles.indexOf("@media"));
@@ -345,5 +348,98 @@ assert.match(lightboxStageRule, /grid-template-columns:\s*minmax\(0,\s*1fr\);/, 
 assert.match(lightboxStageRule, /overflow:\s*hidden;/, "Lightbox stage should clip the image before it reaches the footer");
 assert.match(baseStyles, /(?:^|\n)\.lightbox-footer\s*\{[^}]*min-height:\s*44px;[^}]*position:\s*relative;[^}]*\}/, "Lightbox footer should reserve its own row and paint above the stage boundary");
 assert.match(styles, /\.lightbox-step\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?\}/, "Lightbox navigation buttons should overlay the image area instead of reserving side columns");
+
+{
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(
+    [
+      extractFunctionSource(main, "clamp"),
+      extractFunctionSource(main, "clampPopupPosition"),
+      "helpers = { clampPopupPosition };"
+    ].join("\n"),
+    context
+  );
+  const { clampPopupPosition } = context.helpers;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(clampPopupPosition(1250, 700, 240, 48, 1280, 720, 12))),
+    { x: 1028, y: 660 },
+    "Popup clamping should pull bottom-right overflow back inside viewport margins"
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(clampPopupPosition(-20, 2, 240, 48, 1280, 720, 12))),
+    { x: 12, y: 12 },
+    "Popup clamping should respect minimum top-left margins"
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(clampPopupPosition(120, 200, 240, 48, 1280, 720, 12))),
+    { x: 120, y: 200 },
+    "Popup clamping should preserve valid in-bounds coordinates"
+  );
+}
+
+{
+  const markdownHtml = renderToStaticMarkup(
+    React.createElement(MarkdownContent, {
+      text: [
+        "### Heading <script>alert(1)</script>",
+        "",
+        "Safe needle match and [blocked](javascript:alert(1)) plus [docs](https://example.com).",
+        "",
+        "| Name | Role |",
+        "| --- | --- |",
+        "| Alice | Admin |",
+        "",
+        "```js",
+        "const x = '<script>bad</script>';",
+        "```"
+      ].join("\n"),
+      highlightQuery: "needle"
+    })
+  );
+  assert.equal(markdownHtml.includes("<script>"), false, "Markdown renderer must never emit raw script tags");
+  assert.equal(/<a\b[^>]*javascript:/i.test(markdownHtml), false, "Markdown renderer must not render javascript: anchor hrefs");
+  assert.equal(/<a\b[^>]*>blocked<\/a>/i.test(markdownHtml), false, "Unsafe links must not become anchor tags");
+  assert.match(markdownHtml, /<a[^>]*href="https:\/\/example\.com"/, "Markdown renderer should preserve safe https links");
+  assert.match(markdownHtml, /<mark class="search-highlight">needle<\/mark>/, "Markdown renderer should highlight find matches");
+  assert.match(markdownHtml, /<table class="md-table">/, "Markdown renderer should render GFM tables");
+  assert.match(markdownHtml, /<div class="code-block">[\s\S]*?Copy code/, "Markdown renderer should render fenced code blocks with copy button");
+}
+
+{
+  const complexMarkdown = [
+    "### Heading needle",
+    "",
+    "Inline `code needle` and [link needle](https://example.com/needle-ignored-in-url).",
+    "",
+    "> Quote needle",
+    "",
+    "- List item needle",
+    "",
+    "| Col | Val |",
+    "| --- | --- |",
+    "| cell needle | ok |",
+    "",
+    "```js",
+    "const needle = 'needle';",
+    "```"
+  ].join("\n");
+
+  const expectedCount = countMarkdownHighlightMatches(complexMarkdown, "needle");
+  assert.equal(expectedCount, 8, "countMarkdownHighlightMatches should count every rendered occurrence excluding link href URLs");
+
+  const highlightedHtml = renderToStaticMarkup(
+    React.createElement(MarkdownContent, {
+      text: complexMarkdown,
+      highlightQuery: "needle",
+      activeMatchIndex: 2
+    })
+  );
+  const allMarks = highlightedHtml.match(/<mark class="search-highlight(?:\s+active)?"[^>]*>/g) ?? [];
+  const activeMarks = highlightedHtml.match(/<mark class="search-highlight active" data-active-match="true">/g) ?? [];
+  assert.equal(allMarks.length, expectedCount, "SSR mark count should match countMarkdownHighlightMatches exactly");
+  assert.equal(activeMarks.length, 1, "Only one match should carry the active highlight marker");
+  assert.equal(allMarks[2], '<mark class="search-highlight active" data-active-match="true">', "activeMatchIndex=2 should activate the 3rd match");
+}
 
 console.log("ui contract tests passed");

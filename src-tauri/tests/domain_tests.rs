@@ -423,6 +423,15 @@ fn library_asset_protocol_accepts_only_library_urls() {
             .unwrap();
     assert_eq!(parsed.export_id, "export 1");
     assert_eq!(parsed.file_id, "file-img-1");
+    assert!(!parsed.thumbnail);
+
+    let parsed_thumb = asset_protocol::parse_asset_url(
+        "http://gpt-export-asset.localhost/library/export%201/file-img-1?thumb=1",
+    )
+    .unwrap();
+    assert_eq!(parsed_thumb.export_id, "export 1");
+    assert_eq!(parsed_thumb.file_id, "file-img-1");
+    assert!(parsed_thumb.thumbnail);
     let windows_bridge = asset_protocol::parse_asset_url(
         "http://gpt-export-asset.localhost/library/export%201/file-img-1",
     )
@@ -442,6 +451,122 @@ fn library_asset_protocol_accepts_only_library_urls() {
     assert!(asset_protocol::parse_asset_url("gpt-export-asset://other/export/file").is_err());
     assert!(asset_protocol::parse_asset_url("file:///C:/secret.png").is_err());
     assert!(asset_protocol::parse_asset_url("gpt-export-asset://library/%FF/file-img-1").is_err());
+    assert!(
+        asset_protocol::parse_asset_url("gpt-export-asset://library/export/..%5Cescape?thumb=1")
+            .is_err()
+    );
+}
+
+#[test]
+fn foundations_export_modified_at_uses_rfc3339_utc() {
+    let fixture = make_export_fixture();
+    let scanned = exports::scan_exports(&fixture.good).unwrap();
+    assert_eq!(scanned.len(), 1);
+    let modified_at = &scanned[0].modified_at;
+    assert!(
+        modified_at.contains('T') && modified_at.ends_with('Z'),
+        "expected RFC3339 UTC timestamp, got {modified_at}"
+    );
+    assert!(
+        modified_at.parse::<chrono::DateTime<chrono::Utc>>().is_ok(),
+        "modified_at should parse as RFC3339: {modified_at}"
+    );
+}
+
+#[test]
+fn conversations_filter_hidden_and_empty_system_nodes_and_write_jsonl_offsets() {
+    let root = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let export_dir = root.path().join("filtered-export");
+    fs::create_dir_all(&export_dir).unwrap();
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-filtered",
+                "title": "Hidden Node Test",
+                "create_time": 1710000000,
+                "update_time": 1710000100,
+                "current_node": "n5",
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "children": ["n2"],
+                        "message": {
+                            "id": "sys-empty",
+                            "author": { "role": "system" },
+                            "content": { "content_type": "text", "parts": [""] }
+                        }
+                    },
+                    "n2": {
+                        "id": "n2",
+                        "parent": "n1",
+                        "children": ["n3"],
+                        "message": {
+                            "id": "sys-hidden",
+                            "author": { "role": "system" },
+                            "metadata": { "is_visually_hidden_from_conversation": true },
+                            "content": { "content_type": "text", "parts": ["Secret system instruction"] }
+                        }
+                    },
+                    "n3": {
+                        "id": "n3",
+                        "parent": "n2",
+                        "children": ["n4"],
+                        "message": {
+                            "id": "sys-ctx",
+                            "author": { "role": "system" },
+                            "content": {
+                                "content_type": "user_editable_context",
+                                "user_profile": "Profile text"
+                            }
+                        }
+                    },
+                    "n4": {
+                        "id": "n4",
+                        "parent": "n3",
+                        "children": ["n5"],
+                        "message": {
+                            "id": "u1",
+                            "author": { "role": "user" },
+                            "content": { "content_type": "text", "parts": ["Visible question"] }
+                        }
+                    },
+                    "n5": {
+                        "id": "n5",
+                        "parent": "n4",
+                        "children": [],
+                        "message": {
+                            "id": "a1",
+                            "author": { "role": "assistant" },
+                            "content": { "content_type": "text", "parts": ["Visible answer"] }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    let export_item = exports::scan_exports(&export_dir).unwrap().remove(0);
+    let jsonl_path = cache_dir.path().join("conversations-normalized.jsonl");
+    let artifacts =
+        conversations::summary_index::build_conversation_artifacts(&export_item, &jsonl_path)
+            .unwrap();
+
+    assert_eq!(artifacts.index.items.len(), 1);
+    let summary = &artifacts.index.items[0];
+    assert_eq!(summary.message_count, 2);
+
+    let &(offset, len) = artifacts.offsets.get("conv-filtered").unwrap();
+    let loaded = conversations::load::read_conversation_from_jsonl(&jsonl_path, offset, len).unwrap();
+    assert_eq!(loaded.total_messages, 2);
+    assert_eq!(summary.message_count, loaded.total_messages);
+    assert_eq!(loaded.messages.len(), 2);
+    assert_eq!(loaded.messages[0].ordinal, 1);
+    assert_eq!(loaded.messages[0].text, "Visible question");
+    assert_eq!(loaded.messages[1].ordinal, 2);
+    assert_eq!(loaded.messages[1].text, "Visible answer");
 }
 
 struct Fixture {
@@ -652,4 +777,64 @@ fn legacy_conversation_cache_digest(
     hasher.update(fingerprint_mtime_ms.unwrap_or_default().to_le_bytes());
     hasher.update([u8::from(fingerprint_missing)]);
     format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
+#[test]
+fn library_thumbnail_generator_downscales_and_caches_large_images() {
+    let temp = tempfile::tempdir().unwrap();
+    let src_path = temp.path().join("large.png");
+    let cache_dir = temp.path().join("cache");
+
+    let img = image::RgbImage::from_fn(1200, 900, |x, y| {
+        let mut h = x
+            .wrapping_mul(374_761_393)
+            .wrapping_add(y.wrapping_mul(668_265_263));
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        image::Rgb([
+            (h & 0xff) as u8,
+            ((h >> 8) & 0xff) as u8,
+            ((h >> 16) & 0xff) as u8,
+        ])
+    });
+    image::DynamicImage::ImageRgb8(img)
+        .save_with_format(&src_path, image::ImageFormat::Png)
+        .unwrap();
+
+    let src_len = std::fs::metadata(&src_path).unwrap().len();
+    assert!(
+        src_len > 48 * 1024,
+        "synthetic source PNG should exceed 48KB bypass threshold (got {src_len})"
+    );
+
+    let resolved = gpt_export_viewer_lib::models::ResolvedAsset {
+        file_id: "file-large-1".to_string(),
+        file_path: src_path.clone(),
+        file_name: "large.png".to_string(),
+        mime_type: "image/png".to_string(),
+        size: src_len,
+    };
+
+    let (mime, bytes) =
+        gpt_export_viewer_lib::library::thumbnails::read_or_create_thumbnail(&resolved, &cache_dir)
+            .unwrap();
+    assert_eq!(mime, "image/jpeg");
+
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert_eq!(decoded.width(), 384);
+    assert_eq!(decoded.height(), 288);
+
+    let thumbs_dir = cache_dir.join("thumbs");
+    let cached_entries: Vec<_> = std::fs::read_dir(&thumbs_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("jpg"))
+        .collect();
+    assert_eq!(cached_entries.len(), 1);
+    assert_eq!(std::fs::read(cached_entries[0].path()).unwrap(), bytes);
+
+    let (mime_cached, bytes_cached) =
+        gpt_export_viewer_lib::library::thumbnails::read_or_create_thumbnail(&resolved, &cache_dir)
+            .unwrap();
+    assert_eq!(mime_cached, "image/jpeg");
+    assert_eq!(bytes_cached, bytes);
 }

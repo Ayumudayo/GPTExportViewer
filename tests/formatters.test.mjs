@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { formatChatTimestamp, formatExportLabel } from "../src/data/formatters.js";
+import { formatChatTimestamp, formatDate, formatExportLabel, formatShortDate } from "../src/data/formatters.js";
 
 assert.equal(
   formatExportLabel({
@@ -29,6 +29,37 @@ assert.match(
   formatChatTimestamp("2026-06-09T10:00:20.000Z"),
   /2026/,
   "Chat timestamps should include the four-digit year"
+);
+
+// Numeric epoch-ms string inputs (legacy metadata/modifiedAt values)
+assert.notEqual(
+  formatDate("1717927220000", "Unknown"),
+  "Unknown",
+  "formatDate should parse numeric epoch-ms strings rather than falling back"
+);
+assert.equal(
+  formatDate("1717927220000"),
+  formatDate("2024-06-09T10:00:20.000Z"),
+  "formatDate should format epoch-ms strings identically to equivalent ISO strings"
+);
+assert.equal(
+  formatShortDate("1717927220000"),
+  formatShortDate("2024-06-09T10:00:20.000Z"),
+  "formatShortDate should format epoch-ms strings identically to equivalent ISO strings"
+);
+assert.equal(
+  formatChatTimestamp("1717927220000"),
+  formatChatTimestamp("2024-06-09T10:00:20.000Z"),
+  "formatChatTimestamp should format epoch-ms strings identically to equivalent ISO strings"
+);
+assert.match(
+  formatChatTimestamp("1717927220000"),
+  /2024/,
+  "formatChatTimestamp should include the year for numeric epoch-ms strings"
+);
+assert.equal(
+  formatExportLabel({ name: "", modifiedAt: "1717927220000" }),
+  "2024-06-09 10:00:20"
 );
 
 console.log("formatter tests passed");

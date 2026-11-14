@@ -12,48 +12,64 @@ use crate::models::{
 };
 use crate::state::AppState;
 
-#[tauri::command]
-pub fn get_exports(state: State<'_, AppState>) -> AppResult<ExportsResponse> {
-    state.get_exports_response()
+async fn run_blocking<T, F>(work: F) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> AppResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| AppError::CacheUnavailable(format!("background task failed: {error}")))?
 }
 
 #[tauri::command]
-pub fn get_settings(state: State<'_, AppState>) -> AppResult<SettingsResponse> {
-    state.get_settings_response()
+pub async fn get_exports(state: State<'_, AppState>) -> AppResult<ExportsResponse> {
+    let state = state.inner().clone();
+    run_blocking(move || state.get_exports_response()).await
 }
 
 #[tauri::command]
-pub fn update_settings(
+pub async fn get_settings(state: State<'_, AppState>) -> AppResult<SettingsResponse> {
+    let state = state.inner().clone();
+    run_blocking(move || state.get_settings_response()).await
+}
+
+#[tauri::command]
+pub async fn update_settings(
     state: State<'_, AppState>,
     source_root: String,
 ) -> AppResult<UpdateSettingsResponse> {
-    state.update_settings_response(source_root)
+    let state = state.inner().clone();
+    run_blocking(move || state.update_settings_response(source_root)).await
 }
 
 #[tauri::command]
-pub fn rescan_exports(state: State<'_, AppState>) -> AppResult<RescanExportsResponse> {
-    state.rescan_exports_response()
+pub async fn rescan_exports(state: State<'_, AppState>) -> AppResult<RescanExportsResponse> {
+    let state = state.inner().clone();
+    run_blocking(move || state.rescan_exports_response()).await
 }
 
 #[tauri::command]
-pub fn update_preferences(
+pub async fn update_preferences(
     state: State<'_, AppState>,
     selected_export_id: Option<String>,
     window_size: Option<WindowSize>,
 ) -> AppResult<SettingsResponse> {
-    state.update_preferences_response(selected_export_id, window_size)
+    let state = state.inner().clone();
+    run_blocking(move || state.update_preferences_response(selected_export_id, window_size)).await
 }
 
 #[tauri::command]
-pub fn get_stats(
+pub async fn get_stats(
     state: State<'_, AppState>,
     export_id: Option<String>,
 ) -> AppResult<StatsResponse> {
-    state.get_stats_response(export_id)
+    let state = state.inner().clone();
+    run_blocking(move || state.get_stats_response(export_id)).await
 }
 
 #[tauri::command]
-pub fn get_conversations(
+pub async fn get_conversations(
     state: State<'_, AppState>,
     export_id: Option<String>,
     query: Option<String>,
@@ -61,11 +77,13 @@ pub fn get_conversations(
     cursor: Option<usize>,
     limit: Option<usize>,
 ) -> AppResult<PagedResponse<ConversationSummary, ConversationStats>> {
-    state.get_conversations_response(export_id, query, filter, cursor, limit)
+    let state = state.inner().clone();
+    run_blocking(move || state.get_conversations_response(export_id, query, filter, cursor, limit))
+        .await
 }
 
 #[tauri::command]
-pub fn get_library(
+pub async fn get_library(
     state: State<'_, AppState>,
     export_id: Option<String>,
     query: Option<String>,
@@ -73,48 +91,60 @@ pub fn get_library(
     cursor: Option<usize>,
     limit: Option<usize>,
 ) -> AppResult<PagedResponse<LibraryResponseItem, LibraryStats>> {
-    state.get_library_response(export_id, query, filter, cursor, limit)
+    let state = state.inner().clone();
+    run_blocking(move || state.get_library_response(export_id, query, filter, cursor, limit)).await
 }
 
 #[tauri::command]
-pub fn get_conversation(
+pub async fn get_conversation(
     state: State<'_, AppState>,
     export_id: Option<String>,
     conversation_id: String,
     start: Option<usize>,
     limit: Option<usize>,
 ) -> AppResult<Conversation> {
-    state.get_conversation_response(export_id, conversation_id, start, limit)
+    let state = state.inner().clone();
+    run_blocking(move || state.get_conversation_response(export_id, conversation_id, start, limit))
+        .await
 }
 
 #[tauri::command]
-pub fn refresh_index(
+pub async fn refresh_index(
     state: State<'_, AppState>,
     export_id: Option<String>,
 ) -> AppResult<RefreshIndexResponse> {
-    state.refresh_index_response(export_id)
+    let state = state.inner().clone();
+    run_blocking(move || state.refresh_index_response(export_id)).await
 }
 
 #[tauri::command]
-pub fn save_sessions(
+pub async fn save_sessions(
     app: AppHandle,
     state: State<'_, AppState>,
     export_id: Option<String>,
     conversation_ids: Vec<String>,
 ) -> AppResult<SaveSessionsResponse> {
-    state.save_sessions_response(export_id, conversation_ids, |progress| {
-        let _ = app.emit("session-export-progress", progress);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        state.save_sessions_response(export_id, conversation_ids, |progress| {
+            let _ = app.emit("session-export-progress", progress);
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn open_saved_sessions_folder(
+pub async fn open_saved_sessions_folder(
     state: State<'_, AppState>,
     export_id: Option<String>,
 ) -> AppResult<OpenFolderResponse> {
-    let path = state.saved_sessions_dir_for_export(export_id)?;
-    open_folder(&path)?;
-    Ok(OpenFolderResponse { path })
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let path = state.saved_sessions_dir_for_export(export_id)?;
+        open_folder(&path)?;
+        Ok(OpenFolderResponse { path })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -124,7 +154,13 @@ pub async fn save_original_image(
     export_id: Option<String>,
     file_id: String,
 ) -> AppResult<SaveOriginalImageResponse> {
-    let metadata = state.original_image_metadata(export_id.clone(), &file_id)?;
+    let state_clone = state.inner().clone();
+    let export_id_clone = export_id.clone();
+    let file_id_clone = file_id.clone();
+    let metadata = run_blocking(move || {
+        state_clone.original_image_metadata(export_id_clone, &file_id_clone)
+    })
+    .await?;
     let selected_path = app
         .dialog()
         .file()
@@ -150,7 +186,9 @@ pub async fn save_original_image(
     let destination_path = selected_path
         .into_path()
         .map_err(|error| AppError::InvalidSourceRoot(format!("Invalid save path: {error}")))?;
-    state.save_original_image_to_path(export_id, file_id, destination_path)
+    let state_clone = state.inner().clone();
+    run_blocking(move || state_clone.save_original_image_to_path(export_id, file_id, destination_path))
+        .await
 }
 
 fn save_dialog_file_name(value: &str) -> String {

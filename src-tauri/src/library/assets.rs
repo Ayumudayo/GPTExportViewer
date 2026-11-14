@@ -8,10 +8,19 @@ pub fn resolve_asset(
     file_id: &str,
     library_items: &[LibraryItem],
 ) -> AppResult<ResolvedAsset> {
-    let safe_file_id = assert_safe_file_id(file_id)?.to_string();
+    let safe_file_id = assert_safe_file_id(file_id)?;
     let item = library_items
         .iter()
         .find(|candidate| candidate.file_id == safe_file_id || candidate.id == safe_file_id);
+    resolve_asset_for_item(export_item, safe_file_id, item)
+}
+
+pub fn resolve_asset_for_item(
+    export_item: &ExportItem,
+    file_id: &str,
+    item: Option<&LibraryItem>,
+) -> AppResult<ResolvedAsset> {
+    let safe_file_id = assert_safe_file_id(file_id)?.to_string();
     let fallback_file_ref;
     let file_ref = if let Some(item) = item {
         item.file_ref.as_str()

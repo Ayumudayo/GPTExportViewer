@@ -43,3 +43,30 @@ pub fn page_items<T: Clone>(
         },
     }
 }
+
+pub fn page_indices<T>(
+    indices: &[usize],
+    cursor: usize,
+    limit: usize,
+    max_limit: usize,
+    map_index: impl FnMut(usize) -> T,
+) -> PagedItems<T> {
+    let pagination = parse_pagination(Some(cursor), Some(limit), limit, max_limit);
+    let end = pagination.cursor.saturating_add(pagination.limit);
+    let sliced = indices
+        .iter()
+        .copied()
+        .skip(pagination.cursor)
+        .take(pagination.limit)
+        .map(map_index)
+        .collect();
+    PagedItems {
+        items: sliced,
+        page: Page {
+            cursor: pagination.cursor,
+            limit: pagination.limit,
+            total: indices.len(),
+            next_cursor: (end < indices.len()).then(|| end.to_string()),
+        },
+    }
+}

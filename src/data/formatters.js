@@ -1,7 +1,15 @@
+function parseDate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const date =
+    typeof value === "string" && /^\d+$/.test(value.trim())
+      ? new Date(Number(value.trim()))
+      : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatDate(value, fallback = "Unknown") {
-  if (!value) return fallback;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return fallback;
+  const date = parseDate(value);
+  if (!date) return fallback;
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -11,9 +19,8 @@ export function formatDate(value, fallback = "Unknown") {
 }
 
 export function formatChatTimestamp(value, fallback = "") {
-  if (!value) return fallback;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return fallback;
+  const date = parseDate(value);
+  if (!date) return fallback;
   return new Intl.DateTimeFormat(undefined, {
     year: "numeric",
     month: "short",
@@ -24,9 +31,8 @@ export function formatChatTimestamp(value, fallback = "") {
 }
 
 export function formatShortDate(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
+  const date = parseDate(value);
+  if (!date) return "";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
 }
 
@@ -61,9 +67,8 @@ export function truncate(value, length = 180) {
 }
 
 function formatIsoLike(value) {
-  if (!value) return "Unknown export";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown export";
+  const date = parseDate(value);
+  if (!date) return "Unknown export";
   const pad = (part) => String(part).padStart(2, "0");
   return [
     `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`,

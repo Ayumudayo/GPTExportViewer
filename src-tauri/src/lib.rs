@@ -13,6 +13,7 @@ pub mod state;
 pub mod time;
 pub mod webview2;
 
+use tauri::Manager;
 use unicode_normalization::UnicodeNormalization;
 
 pub fn run() {
@@ -29,10 +30,34 @@ pub fn run() {
         }
     };
     let protocol_state = app_state.clone();
+    let setup_state = app_state.clone();
 
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(settings_res) = setup_state.get_settings_response() {
+                    if let Some(saved) = settings_res.settings.window_size {
+                        let (mut width, mut height) = (saved.width, saved.height);
+                        if let Ok(Some(monitor)) = window.current_monitor() {
+                            let monitor_size = monitor.size();
+                            let scale = monitor.scale_factor();
+                            let min_w = (980.0 * scale).round() as u32;
+                            let min_h = (620.0 * scale).round() as u32;
+                            width = width.clamp(min_w.min(monitor_size.width), monitor_size.width);
+                            height =
+                                height.clamp(min_h.min(monitor_size.height), monitor_size.height);
+                        } else {
+                            width = width.max(980);
+                            height = height.max(620);
+                        }
+                        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+                    }
+                }
+            }
+            Ok(())
+        })
         .register_uri_scheme_protocol("gpt-export-asset", move |_ctx, request| {
             asset_response(&protocol_state, request.uri().to_string())
         })
@@ -56,9 +81,14 @@ pub fn run() {
 }
 
 fn asset_response(state: &state::AppState, uri: String) -> tauri::http::Response<Vec<u8>> {
-    match asset_protocol::parse_asset_url(&uri)
-        .and_then(|parsed| state.read_asset_payload(&parsed.export_id, &parsed.file_id))
-    {
+    let result = asset_protocol::parse_asset_url(&uri).and_then(|parsed| {
+        if parsed.thumbnail {
+            state.read_thumbnail_payload(&parsed.export_id, &parsed.file_id)
+        } else {
+            state.read_asset_payload(&parsed.export_id, &parsed.file_id)
+        }
+    });
+    match result {
         Ok(asset) => tauri::http::Response::builder()
             .status(tauri::http::StatusCode::OK)
             .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)

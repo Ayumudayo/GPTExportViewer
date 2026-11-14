@@ -69,6 +69,7 @@ const client = createTauriApiClient({
 });
 
 assert.equal(client.assetUrl("export id", "file/id"), "http://gpt-export-asset.localhost/library/export%20id/file%2Fid");
+assert.equal(client.thumbUrl("export id", "file/id"), "http://gpt-export-asset.localhost/library/export%20id/file%2Fid?thumb=1");
 assert.deepEqual(await client.pickSourceFolder({ initialPath: "E:\\OpenAI" }), { folder: { selectedPath: "E:\\OpenAI\\Exports" } });
 assert.deepEqual(
   await createTauriApiClient({ invoke: async () => ({}), openDialog: async () => null }).pickSourceFolder({ initialPath: "E:\\OpenAI" }),

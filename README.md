@@ -40,7 +40,7 @@ GPTExportViewer는 ChatGPT Export Data를 로컬에서 열어 보는 Windows 데
 이 프로젝트는 Tauri/Rust 기반 Windows 데스크톱 앱입니다.
 
 - Windows 10/11
-- Microsoft Edge WebView2 Runtime
+- Microsoft Edge WebView2 Runtime (110.0.1531.0 이상)
 - Node.js와 npm
 - Rust와 Cargo
 - Windows MSVC Build Tools

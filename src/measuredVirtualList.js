@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { computeMeasuredVirtualRange } from "./chatReaderHelpers.js";
+import { buildMeasuredOffsets, computeVirtualRangeFromOffsets } from "./chatReaderHelpers.js";
 
 export function useScrollViewport(resetKey, externalContainerRef = null) {
-  const ownedContainerRef = useRef(null);
+  const ownedNodeRef = useRef(null);
+  const [mountedNode, setMountedNode] = useState(null);
+  const ownedContainerRef = useMemo(() => {
+    const callbackRef = Object.assign(
+      (node) => {
+        ownedNodeRef.current = node;
+        callbackRef.current = node;
+        setMountedNode((current) => (current === node ? current : node));
+      },
+      { current: null }
+    );
+    return callbackRef;
+  }, []);
   const containerRef = externalContainerRef ?? ownedContainerRef;
   const [viewport, setViewport] = useState({ scrollOffset: 0, viewportSize: 1, width: 1 });
 
   const updateViewport = useCallback(() => {
-    const node = containerRef.current;
+    const node = externalContainerRef ? externalContainerRef.current : ownedNodeRef.current;
     if (!node) return;
     const nextViewport = {
       scrollOffset: node.scrollTop,
@@ -21,10 +33,10 @@ export function useScrollViewport(resetKey, externalContainerRef = null) {
         ? current
         : nextViewport
     );
-  }, [containerRef]);
+  }, [externalContainerRef]);
 
   useEffect(() => {
-    const node = containerRef.current;
+    const node = externalContainerRef ? externalContainerRef.current : mountedNode;
     if (!node) return;
     let frame = 0;
     const scheduleUpdate = () => {
@@ -55,22 +67,22 @@ export function useScrollViewport(resetKey, externalContainerRef = null) {
         else (globalThis.window ?? globalThis).clearTimeout(frame);
       }
     };
-  }, [containerRef, updateViewport]);
+  }, [externalContainerRef, mountedNode, updateViewport]);
 
   useEffect(() => {
-    const node = containerRef.current;
+    const node = externalContainerRef ? externalContainerRef.current : ownedNodeRef.current;
     if (node) node.scrollTop = 0;
     updateViewport();
-  }, [containerRef, resetKey, updateViewport]);
+  }, [externalContainerRef, resetKey, updateViewport]);
 
-  return { containerRef, viewport };
+  return { containerRef, viewport, syncViewport: updateViewport };
 }
 
 export function useMeasuredVirtualList(
   items,
   { estimatedItemSize, overscan = 8, resetKey = "", getItemKey = (_, index) => index, containerRef: externalContainerRef = null }
 ) {
-  const { containerRef, viewport } = useScrollViewport(resetKey, externalContainerRef);
+  const { containerRef, viewport, syncViewport } = useScrollViewport(resetKey, externalContainerRef);
   const [measuredHeights, setMeasuredHeights] = useState({});
   const measuredHeightsRef = useRef({});
   const observerEntriesRef = useRef(new Map());
@@ -85,7 +97,7 @@ export function useMeasuredVirtualList(
 
     frameRef.current = schedule(() => {
       frameRef.current = 0;
-      const nextHeights = measuredHeightsRef.current;
+      const nextHeights = { ...measuredHeightsRef.current };
       setMeasuredHeights((current) => {
         const currentKeys = Object.keys(current);
         const nextKeys = Object.keys(nextHeights);
@@ -108,7 +120,7 @@ export function useMeasuredVirtualList(
     (key, height) => {
       const nextHeight = Math.max(1, Math.ceil(Number(height) || 0));
       if (!Number.isFinite(nextHeight) || measuredHeightsRef.current[key] === nextHeight) return;
-      measuredHeightsRef.current = { ...measuredHeightsRef.current, [key]: nextHeight };
+      measuredHeightsRef.current[key] = nextHeight;
       syncMeasuredHeights();
     },
     [syncMeasuredHeights]
@@ -167,17 +179,13 @@ export function useMeasuredVirtualList(
   );
 
   const itemKeys = useMemo(() => items.map((item, index) => String(getItemKey(item, index))), [getItemKey, items]);
+  const offsets = useMemo(
+    () => buildMeasuredOffsets(itemKeys, measuredHeights, estimatedItemSize),
+    [estimatedItemSize, itemKeys, measuredHeights]
+  );
   const range = useMemo(
-    () =>
-      computeMeasuredVirtualRange({
-        itemKeys,
-        measuredHeights,
-        estimatedItemSize,
-        scrollOffset: viewport.scrollOffset,
-        viewportSize: viewport.viewportSize,
-        overscan
-      }),
-    [estimatedItemSize, itemKeys, measuredHeights, overscan, viewport.scrollOffset, viewport.viewportSize]
+    () => computeVirtualRangeFromOffsets(offsets, viewport.scrollOffset, viewport.viewportSize, overscan, estimatedItemSize),
+    [estimatedItemSize, offsets, overscan, viewport.scrollOffset, viewport.viewportSize]
   );
 
   return {
@@ -185,6 +193,8 @@ export function useMeasuredVirtualList(
     beforeSize: range.beforeSize,
     afterSize: range.afterSize,
     items: items.slice(range.startIndex, range.endIndex).map((item, offset) => ({ item, index: range.startIndex + offset })),
-    measureItem
+    measureItem,
+    offsets,
+    syncViewport
   };
 }

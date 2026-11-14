@@ -6,14 +6,25 @@ use crate::models::{AssetRef, Conversation, ConversationMessage, MessagePart};
 use crate::time::to_iso_time;
 
 pub fn normalize_conversation(conversation: &Value) -> crate::errors::AppResult<Conversation> {
+    normalize_conversation_with_fallback(conversation, "")
+}
+
+pub fn normalize_conversation_with_fallback(
+    conversation: &Value,
+    fallback_id: &str,
+) -> crate::errors::AppResult<Conversation> {
     let ordered_nodes = get_ordered_nodes(conversation);
     let messages: Vec<_> = ordered_nodes
         .iter()
+        .filter_map(normalize_node)
         .enumerate()
-        .filter_map(|(index, node)| normalize_node(node, index))
+        .map(|(index, mut message)| {
+            message.ordinal = index + 1;
+            message
+        })
         .collect();
     Ok(Conversation {
-        id: get_conversation_id(conversation, ""),
+        id: get_conversation_id(conversation, fallback_id),
         title: conversation
             .get("title")
             .and_then(Value::as_str)
@@ -121,7 +132,7 @@ pub fn extract_message_parts_from_pair(content: &Value, metadata: &Value) -> Vec
     }
 }
 
-fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage> {
+fn normalize_node(node: &NodeValue) -> Option<ConversationMessage> {
     let message = node.value.get("message")?;
     let role = message
         .pointer("/author/role")
@@ -131,7 +142,25 @@ fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage>
         .to_string();
     let content = &message["content"];
     let metadata = &message["metadata"];
+    let content_type = message
+        .pointer("/content/content_type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let text = extract_message_text(content);
+    let asset_refs = extract_asset_refs_from_pair(content, metadata);
+    let parts = extract_message_parts_from_pair(content, metadata);
+
+    if should_skip_message_node(
+        message,
+        &role,
+        content_type.as_deref(),
+        &text,
+        &parts,
+        &asset_refs,
+    ) {
+        return None;
+    }
+
     Some(ConversationMessage {
         id: message
             .get("id")
@@ -140,7 +169,7 @@ fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage>
             .unwrap_or(&node.id)
             .to_string(),
         node_id: node.id.clone(),
-        ordinal: index + 1,
+        ordinal: 0,
         role: role.clone(),
         author: message
             .pointer("/author/name")
@@ -153,14 +182,44 @@ fn normalize_node(node: &NodeValue, index: usize) -> Option<ConversationMessage>
                 .or_else(|| message.get("created_at"))
                 .unwrap_or(&Value::Null),
         ),
-        content_type: message
-            .pointer("/content/content_type")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        content_type,
         text,
-        asset_refs: extract_asset_refs_from_pair(content, metadata),
-        parts: extract_message_parts_from_pair(content, metadata),
+        asset_refs,
+        parts,
     })
+}
+
+fn should_skip_message_node(
+    message: &Value,
+    role: &str,
+    content_type: Option<&str>,
+    text: &str,
+    parts: &[MessagePart],
+    asset_refs: &[AssetRef],
+) -> bool {
+    if message
+        .pointer("/metadata/is_visually_hidden_from_conversation")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    if role == "system"
+        && matches!(
+            content_type,
+            Some("user_editable_context" | "model_editable_context")
+        )
+    {
+        return true;
+    }
+    if matches!(role, "system" | "tool")
+        && text.trim().is_empty()
+        && parts.is_empty()
+        && asset_refs.is_empty()
+    {
+        return true;
+    }
+    false
 }
 
 #[derive(Clone)]

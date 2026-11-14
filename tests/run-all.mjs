@@ -6,5 +6,6 @@ import "./virtualWindow.test.mjs";
 import "./uiContract.test.mjs";
 import "./apiClientContract.test.mjs";
 import "./desktopScaffold.test.mjs";
+import "./appMount.test.mjs";
 
 console.log("all tests passed");

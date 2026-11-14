@@ -12,14 +12,16 @@ const WINDOWS_HTTPS_PREFIX: &str = "https://gpt-export-asset.localhost/library/"
 pub struct ParsedAssetUrl {
     pub export_id: String,
     pub file_id: String,
+    pub thumbnail: bool,
 }
 
 pub fn parse_asset_url(url: &str) -> AppResult<ParsedAssetUrl> {
-    let rest = url
+    let (base_url, query) = url.split_once('?').unwrap_or((url, ""));
+    let rest = base_url
         .strip_prefix(ASSET_SCHEME_PREFIX)
-        .or_else(|| url.strip_prefix(ASSET_SCHEME_LOCALHOST_PREFIX))
-        .or_else(|| url.strip_prefix(WINDOWS_HTTP_PREFIX))
-        .or_else(|| url.strip_prefix(WINDOWS_HTTPS_PREFIX))
+        .or_else(|| base_url.strip_prefix(ASSET_SCHEME_LOCALHOST_PREFIX))
+        .or_else(|| base_url.strip_prefix(WINDOWS_HTTP_PREFIX))
+        .or_else(|| base_url.strip_prefix(WINDOWS_HTTPS_PREFIX))
         .ok_or(AppError::InvalidFileId)?;
     let mut parts = rest.split('/');
     let export_id = parts
@@ -40,8 +42,15 @@ pub fn parse_asset_url(url: &str) -> AppResult<ParsedAssetUrl> {
     if export_id.is_empty() {
         return Err(AppError::InvalidFileId);
     }
+    let thumbnail = query
+        .split('&')
+        .any(|part| part == "thumb=1" || part == "thumb=true");
 
-    Ok(ParsedAssetUrl { export_id, file_id })
+    Ok(ParsedAssetUrl {
+        export_id,
+        file_id,
+        thumbnail,
+    })
 }
 
 fn decode_segment(value: &str) -> AppResult<String> {

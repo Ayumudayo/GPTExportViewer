@@ -535,6 +535,259 @@ fn commands_saved_sessions_dir_for_export_returns_app_data_folder() {
     assert!(dir.exists());
 }
 
+#[test]
+fn commands_conversations_search_matches_full_text_past_preview_limit_and_invalidates_jsonl_store() {
+    let fixture = make_command_fixture();
+    let export_dir = fixture.root.path().join("chatgpt-export-good");
+    let long_prefix = "prefix ".repeat(70);
+    let long_message = format!("{long_prefix}UniqueNeedleBeyondPreview500 tail");
+    assert!(long_message.len() > 500);
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-long",
+                "title": "Long search target",
+                "create_time": 1710000000,
+                "update_time": 1710000600,
+                "current_node": "msg1",
+                "default_model_slug": "gpt-4o",
+                "is_archived": false,
+                "mapping": {
+                    "msg1": {
+                        "id": "msg1",
+                        "parent": null,
+                        "children": [],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "assistant" },
+                            "content": { "content_type": "text", "parts": [long_message] }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let found = state
+        .get_conversations_response(
+            Some(export_id.clone()),
+            Some("UniqueNeedleBeyondPreview500".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(found.items.len(), 1);
+    assert_eq!(found.items[0].id, "conv-long");
+
+    let conversation = state
+        .get_conversation_response(
+            Some(export_id.clone()),
+            "conv-long".to_string(),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(conversation.total_messages, 1);
+    assert!(conversation.messages[0]
+        .text
+        .contains("UniqueNeedleBeyondPreview500"));
+
+    // Verify warm disk-cache reload before file modification (rescan clears memory cache only).
+    state.rescan_exports_response().unwrap();
+    assert!(state.get_stats_response(Some(export_id.clone())).unwrap().cache.hit);
+
+    // Modify conversations.json to confirm JSONL store + search index invalidate automatically on fingerprint mismatch.
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-long",
+                "title": "Updated long session",
+                "create_time": 1710000000,
+                "update_time": 1710000900,
+                "current_node": "msg1",
+                "mapping": {
+                    "msg1": {
+                        "id": "msg1",
+                        "parent": null,
+                        "children": [],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "assistant" },
+                            "content": { "content_type": "text", "parts": ["UpdatedSecondNeedle only"] }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+    state.rescan_exports_response().unwrap();
+
+    let after_update_old = state
+        .get_conversations_response(
+            Some(export_id.clone()),
+            Some("UniqueNeedleBeyondPreview500".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(after_update_old.items.len(), 0);
+
+    let after_update_new = state
+        .get_conversations_response(
+            Some(export_id.clone()),
+            Some("UpdatedSecondNeedle".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(after_update_new.items.len(), 1);
+    assert_eq!(after_update_new.items[0].title, "Updated long session");
+
+    let updated_conversation = state
+        .get_conversation_response(
+            Some(export_id),
+            "conv-long".to_string(),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(updated_conversation.messages[0].text, "UpdatedSecondNeedle only");
+}
+
+#[test]
+fn commands_search_matches_text_past_65kb_boundary() {
+    let fixture = make_command_fixture();
+    let export_dir = fixture.root.path().join("chatgpt-export-good");
+    let long_prefix = "chunk ".repeat(14_000);
+    let long_message = format!("{long_prefix}DeepNeedleBeyond80KB tail");
+    assert!(long_message.len() > 80_000);
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-80kb",
+                "title": "80KB search target",
+                "create_time": 1710000000,
+                "update_time": 1710000600,
+                "current_node": "msg1",
+                "default_model_slug": "gpt-4o",
+                "is_archived": false,
+                "mapping": {
+                    "msg1": {
+                        "id": "msg1",
+                        "parent": null,
+                        "children": [],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "assistant" },
+                            "content": { "content_type": "text", "parts": [long_message] }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let found = state
+        .get_conversations_response(
+            Some(export_id),
+            Some("DeepNeedleBeyond80KB".to_string()),
+            Some("all".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(found.items.len(), 1);
+    assert_eq!(found.items[0].id, "conv-80kb");
+}
+
+#[test]
+fn commands_read_thumbnail_payload_serves_resized_jpeg_for_large_png() {
+    let fixture = make_command_fixture();
+    let export_dir = fixture.root.path().join("chatgpt-export-good");
+
+    let img = image::RgbImage::from_fn(1024, 768, |x, y| {
+        let mut h = x
+            .wrapping_mul(374_761_393)
+            .wrapping_add(y.wrapping_mul(668_265_263));
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        image::Rgb([
+            (h & 0xff) as u8,
+            ((h >> 8) & 0xff) as u8,
+            ((h >> 16) & 0xff) as u8,
+        ])
+    });
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    assert!(
+        png_bytes.len() > 48 * 1024,
+        "synthetic PNG must exceed 48KB bypass threshold (got {})",
+        png_bytes.len()
+    );
+
+    fs::write(export_dir.join("file-img-1.dat"), &png_bytes).unwrap();
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file-img-1",
+                "file_name": "library generated.png",
+                "mime_type": "image/png",
+                "file_size_bytes": png_bytes.len(),
+                "width": 1024,
+                "height": 768,
+                "created_at": "2024-03-09T16:00:02Z",
+                "state": "ready",
+                "library_file_category": "image",
+                "origination_thread_id": "conv-1",
+                "origination_message_id": "m2"
+            }
+        ]),
+    );
+
+    let state = AppState::new_with_app_data(
+        fixture.app_data.path(),
+        Some(fixture.root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let payload = state
+        .read_thumbnail_payload(&export_id, "file-img-1")
+        .unwrap();
+    assert_eq!(payload.mime_type, "image/jpeg");
+
+    let decoded = image::load_from_memory(&payload.bytes).unwrap();
+    assert_eq!(decoded.width(), 384);
+    assert_eq!(decoded.height(), 288);
+}
+
 struct Fixture {
     root: TempDir,
     app_data: TempDir,
