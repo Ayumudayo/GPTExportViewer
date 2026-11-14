@@ -1,81 +1,34 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::{Deserialize, Serialize};
-use unicode_normalization::UnicodeNormalization;
-
-use crate::cache::{
-    export_fingerprint, read_json, write_json_compact_atomic, ExportFingerprint,
-};
+use crate::asset_protocol::asset_url;
 use crate::conversations::{
     load::{load_conversation, read_conversation_from_jsonl, slice_conversation_page},
     save::save_original_sessions,
-    summary_index::build_conversation_artifacts,
 };
 use crate::errors::{io_error, AppError, AppResult};
 use crate::exports::scan_exports;
-use crate::library::{assets::resolve_asset_for_item, index::build_library_index};
+use crate::index_store::{index_export, ConversationLru, IndexedExport};
+use crate::library::assets::resolve_asset_for_item;
 use crate::models::{
-    CacheStatus, Conversation, ConversationIndex, ConversationStats, ConversationSummary,
-    ExportItem, ExportsResponse, LibraryIndex, LibraryItem, LibraryResponseItem, LibraryStats,
-    PagedResponse, PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse,
-    RescanExportsResponse, ResolvedAsset, SaveOriginalImageResponse, SaveSessionsProgress,
-    SaveSessionsResponse, SettingsResponse, StatsResponse, UpdateSettingsResponse, WindowSize,
+    Conversation, ConversationStats, ConversationSummary, ExportItem, ExportsResponse,
+    LibraryResponseItem, LibraryStats, PagedResponse, PublicExport, PublicSettings,
+    RefreshIndexItem, RefreshIndexResponse, RescanExportsResponse, ResolvedAsset,
+    SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse, SettingsResponse,
+    StatsResponse, UpdateSettingsResponse, WindowSize,
 };
 use crate::paging::page_indices;
+use crate::search::{filter_conversation_indices, filter_library_indices};
 use crate::settings::{
     read_runtime_settings, resolve_source_root, write_runtime_settings, RuntimeSettings,
 };
-
-const CACHE_META_VERSION: u8 = 4;
-const CONVERSATION_LRU_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
     inner: Arc<Mutex<StateInner>>,
     index_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     conversation_lru: Arc<Mutex<ConversationLru>>,
-}
-
-#[derive(Debug, Default)]
-struct ConversationLru {
-    entries: VecDeque<((String, String), Arc<Conversation>)>,
-}
-
-impl ConversationLru {
-    fn get(&mut self, export_id: &str, conversation_id: &str) -> Option<Arc<Conversation>> {
-        let pos = self
-            .entries
-            .iter()
-            .position(|((exp, conv), _)| exp == export_id && conv == conversation_id)?;
-        let entry = self.entries.remove(pos)?;
-        let value = Arc::clone(&entry.1);
-        self.entries.push_back(entry);
-        Some(value)
-    }
-
-    fn insert(&mut self, export_id: String, conversation_id: String, value: Arc<Conversation>) {
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|((exp, conv), _)| exp == &export_id && conv == &conversation_id)
-        {
-            self.entries.remove(pos);
-        } else if self.entries.len() >= CONVERSATION_LRU_CAPACITY {
-            self.entries.pop_front();
-        }
-        self.entries
-            .push_back(((export_id, conversation_id), value));
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    fn remove_export(&mut self, export_id: &str) {
-        self.entries.retain(|((exp, _), _)| exp != export_id);
-    }
 }
 
 #[derive(Debug)]
@@ -88,35 +41,6 @@ struct StateInner {
     indexes: HashMap<String, Arc<IndexedExport>>,
     selected_export_id: Option<String>,
     window_size: Option<WindowSize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct CacheMeta {
-    version: u8,
-    export_id: String,
-    export_path: PathBuf,
-    generated_at: String,
-    fingerprint: ExportFingerprint,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConversationStore {
-    offsets: HashMap<String, (u64, u64)>,
-    search_texts: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-struct IndexedExport {
-    conversation_index: ConversationIndex,
-    library_index: LibraryIndex,
-    cache: CacheStatus,
-    conversation_offsets: HashMap<String, (u64, u64)>,
-    conversation_jsonl_path: PathBuf,
-    conversation_search_list: Vec<String>,
-    library_by_file_id: HashMap<String, usize>,
-    library_search_texts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -679,134 +603,6 @@ fn requested_export(inner: &StateInner, export_id: Option<String>) -> AppResult<
         .ok_or(AppError::ExportNotFound)
 }
 
-fn index_export(export: &ExportItem, cache_dir: &Path, force: bool) -> AppResult<IndexedExport> {
-    let export_cache_dir = cache_dir.join(&export.id);
-    let meta_file = export_cache_dir.join("meta.json");
-    let conversations_file = export_cache_dir.join("conversation-summaries.json");
-    let library_file = export_cache_dir.join("library-images.json");
-    let store_file = export_cache_dir.join("conversation-store.json");
-    let jsonl_path = export_cache_dir.join("conversations-normalized.jsonl");
-    let fingerprint = export_fingerprint(export)?;
-
-    if !force && jsonl_path.is_file() {
-        if let Some(meta) = read_json::<CacheMeta>(&meta_file)? {
-            if meta.version == CACHE_META_VERSION
-                && meta.export_id == export.id
-                && meta.fingerprint == fingerprint
-            {
-                let conversation_index = read_json::<ConversationIndex>(&conversations_file)?;
-                let library_index = read_json::<LibraryIndex>(&library_file)?;
-                let store = read_json::<ConversationStore>(&store_file)?;
-                if let (Some(conversation_index), Some(library_index), Some(store)) =
-                    (conversation_index, library_index, store)
-                {
-                    let (library_by_file_id, library_search_texts) =
-                        build_library_lookup(&library_index.items);
-                    let conversation_search_list = build_conversation_search_list(
-                        &conversation_index.items,
-                        &store.search_texts,
-                    );
-                    return Ok(IndexedExport {
-                        conversation_index,
-                        library_index,
-                        cache: CacheStatus {
-                            hit: true,
-                            dir: export_cache_dir,
-                        },
-                        conversation_offsets: store.offsets,
-                        conversation_jsonl_path: jsonl_path,
-                        conversation_search_list,
-                        library_by_file_id,
-                        library_search_texts,
-                    });
-                }
-            }
-        }
-    }
-
-    let artifacts = build_conversation_artifacts(export, &jsonl_path)?;
-    let conversation_ids: HashSet<_> = artifacts
-        .index
-        .items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    let library_index = build_library_index(export, &conversation_ids)?;
-    let (library_by_file_id, library_search_texts) = build_library_lookup(&library_index.items);
-    let conversation_search_list =
-        build_conversation_search_list(&artifacts.index.items, &artifacts.search_texts);
-
-    write_json_compact_atomic(&conversations_file, &artifacts.index)?;
-    write_json_compact_atomic(&library_file, &library_index)?;
-    write_json_compact_atomic(
-        &store_file,
-        &ConversationStore {
-            offsets: artifacts.offsets.clone(),
-            search_texts: artifacts.search_texts,
-        },
-    )?;
-    write_json_compact_atomic(
-        &meta_file,
-        &CacheMeta {
-            version: CACHE_META_VERSION,
-            export_id: export.id.clone(),
-            export_path: export.path.clone(),
-            generated_at: crate::time::generated_at(),
-            fingerprint,
-        },
-    )?;
-
-    Ok(IndexedExport {
-        conversation_index: artifacts.index,
-        library_index,
-        cache: CacheStatus {
-            hit: false,
-            dir: export_cache_dir,
-        },
-        conversation_offsets: artifacts.offsets,
-        conversation_jsonl_path: jsonl_path,
-        conversation_search_list,
-        library_by_file_id,
-        library_search_texts,
-    })
-}
-
-fn build_conversation_search_list(
-    items: &[ConversationSummary],
-    search_texts: &HashMap<String, String>,
-) -> Vec<String> {
-    items
-        .iter()
-        .map(|item| search_texts.get(&item.id).cloned().unwrap_or_default())
-        .collect()
-}
-
-fn build_library_lookup(items: &[LibraryItem]) -> (HashMap<String, usize>, Vec<String>) {
-    let mut by_id = HashMap::with_capacity(items.len());
-    let mut search_texts = Vec::with_capacity(items.len());
-    for (idx, item) in items.iter().enumerate() {
-        by_id.entry(item.file_id.clone()).or_insert(idx);
-        by_id.entry(item.id.clone()).or_insert(idx);
-        let mut search = String::new();
-        for part in [
-            Some(item.display_name.as_str()),
-            Some(item.mime.as_str()),
-            Some(item.file_id.as_str()),
-            item.source_conversation_id.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !search.is_empty() {
-                search.push('\n');
-            }
-            search.push_str(&normalized_search_text(part));
-        }
-        search_texts.push(search);
-    }
-    (by_id, search_texts)
-}
-
 fn public_settings(inner: &StateInner) -> PublicSettings {
     PublicSettings {
         source_root: inner.source_root.clone(),
@@ -819,112 +615,4 @@ fn public_settings(inner: &StateInner) -> PublicSettings {
 
 fn public_exports(exports: &[ExportItem]) -> Vec<PublicExport> {
     exports.iter().map(PublicExport::from).collect()
-}
-
-fn filter_conversation_indices(
-    items: &[ConversationSummary],
-    search_list: &[String],
-    query: Option<&str>,
-    filter: Option<&str>,
-) -> Vec<usize> {
-    let query = normalized_query(query);
-    let filter = filter.unwrap_or("all");
-    items
-        .iter()
-        .enumerate()
-        .filter(|(idx, item)| {
-            if filter == "archived" && !item.archived {
-                return false;
-            }
-            if filter == "active" && item.archived {
-                return false;
-            }
-            let Some(query) = query.as_deref() else {
-                return true;
-            };
-            if let Some(search_text) = search_list.get(*idx).filter(|text| !text.is_empty()) {
-                return search_text.contains(query);
-            }
-            [
-                Some(item.title.as_str()),
-                Some(item.preview.as_str()),
-                item.model.as_deref(),
-                Some(item.id.as_str()),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| normalized_search_text(value).contains(query))
-        })
-        .map(|(idx, _)| idx)
-        .collect()
-}
-
-fn filter_library_indices(
-    items: &[LibraryItem],
-    search_texts: &[String],
-    query: Option<&str>,
-    filter: Option<&str>,
-) -> Vec<usize> {
-    let query = normalized_query(query);
-    let filter = filter.unwrap_or("all");
-    items
-        .iter()
-        .enumerate()
-        .filter(|(idx, item)| {
-            if filter != "all" && item.source_state != filter {
-                return false;
-            }
-            let Some(query) = query.as_deref() else {
-                return true;
-            };
-            if let Some(search_text) = search_texts.get(*idx) {
-                return search_text.contains(query);
-            }
-            [
-                Some(item.display_name.as_str()),
-                Some(item.mime.as_str()),
-                Some(item.file_id.as_str()),
-                item.source_conversation_id.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| normalized_search_text(value).contains(query))
-        })
-        .map(|(idx, _)| idx)
-        .collect()
-}
-
-fn normalized_query(query: Option<&str>) -> Option<String> {
-    query
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(normalized_search_text)
-}
-
-fn normalized_search_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut prev_space = true;
-    for ch in value.to_lowercase().nfc() {
-        if ch.is_whitespace() {
-            if !prev_space {
-                out.push(' ');
-                prev_space = true;
-            }
-        } else {
-            out.push(ch);
-            prev_space = false;
-        }
-    }
-    if out.ends_with(' ') {
-        out.pop();
-    }
-    out
-}
-
-fn asset_url(export_id: &str, file_id: &str) -> String {
-    format!(
-        "http://gpt-export-asset.localhost/library/{}/{}",
-        percent_encoding::utf8_percent_encode(export_id, percent_encoding::NON_ALPHANUMERIC),
-        percent_encoding::utf8_percent_encode(file_id, percent_encoding::NON_ALPHANUMERIC)
-    )
 }
