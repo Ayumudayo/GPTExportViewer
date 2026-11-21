@@ -1,60 +1,123 @@
+**English** | [한국어](README.ko.md)
+
 # GPTExportViewer
 
-GPTExportViewer는 ChatGPT Export Data를 로컬에서 열어 보는 Windows 데스크톱 앱입니다.
+[![CI](https://github.com/Ayumudayo/GPTExportViewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayumudayo/GPTExportViewer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Ayumudayo/GPTExportViewer?display_name=tag)](https://github.com/Ayumudayo/GPTExportViewer/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#requirements)
 
-## 무엇을 볼 수 있나
+GPTExportViewer is a fast, local, read-only Windows desktop viewer and asset extractor for **ChatGPT Export Data**, built on **Tauri/Rust** and React.
 
-- 여러 ChatGPT export를 날짜 기준으로 전환해서 확인
-- 세션 목록, 대화 내용, 모델/메시지 수 같은 기본 정보 확인
-- 대화 검색과 자동 로딩으로 긴 export 탐색
-- 한 개 또는 여러 개의 세션을 JSON 파일로 저장
+![Sessions dark theme showcase](assets/screenshots/sessions-dark.png)
 
-## 사용 흐름
+## Features
 
-1. ChatGPT Export Data 압축 파일을 원하는 경로에 풀어 둡니다.
-2. 앱을 처음 실행하면 표시되는 폴더 선택 화면에서 export가 들어 있는 소스 폴더를 선택합니다.
-3. `Sessions`에서 대화를 읽을 수 있습니다.
-4. 세션을 우클릭하면 선택한 세션을 JSON으로 저장할 수 있습니다.
-5. `Library`에서 export 안의 이미지를 탐색합니다.
+- **Modern & Legacy ChatGPT Exports**: Supports single `conversations.json` files as well as sharded `conversations-NNN.json` exports (`export_manifest.json`), `group_chats.json`, `codex.json`, SVG assets, and modern image generation attachments while stripping internal PUA/annotation markers cleanly.
+- **Structured Conversation Scopes & Multi-Select Projects**: Separates **General**, **Projects**, and **Other** (Custom GPTs, Group Chats, Codex). Assign custom persistent names to projects, toggle **multiple projects simultaneously**, and filter across your selection.
+- **Lossless Original Image Extraction**: Export original full-resolution image files without re-encoding for **one session**, **multiple selected sessions**, **selected project(s)**, or the **entire export** with live progress and direct folder opening.
+- **Hierarchical Organized Folders**: Both batch **original image exports** and **saved session JSON files** are automatically arranged into date-prefixed (`YYYY-MM-DD_<Title>`) and category/project folders so large archives stay structured instead of dumping everything flat.
+- **Fast Search & Reading Ergonomics**: Disk-backed JSONL offset indexing, full-text + project-alias search, in-conversation `Ctrl+F` highlighting, and a floating **Scroll to Bottom** button (which also loads remaining paginated turns automatically).
+- **Light & Dark Themes**: Toggle between polished dark and light palettes with resizable 3-pane desktop layout persistence.
+- **Strictly Read-Only Source Handling**: Original export folders and `.dat` asset files are never modified.
 
-소스 폴더에는 단일 export 폴더를 지정해도 되고, 여러 export 폴더를 모아 둔 상위 폴더를 지정해도 됩니다.
-이후 소스 폴더를 바꾸려면 좌측 상단의 `Settings`를 사용합니다.
-폴더에 새 export를 추가했거나 삭제했다면 `Settings` 옆의 새로고침 버튼으로 소스 폴더를 다시 스캔합니다.
+## Gallery & Light Mode
 
-## 데이터 저장
+<table>
+  <tr>
+    <td>
+      <img src="assets/screenshots/library-dark.png" alt="Image library gallery and metadata inspector" />
+      <p align="center"><em>Image Library gallery with linked/library-only badges &amp; metadata inspector</em></p>
+    </td>
+    <td>
+      <img src="assets/screenshots/sessions-light.png" alt="Light theme session reader with floating scroll-to-bottom button" />
+      <p align="center"><em>Light theme reader with botanical asset preview &amp; Scroll-to-Bottom button</em></p>
+    </td>
+  </tr>
+</table>
 
-원본 ChatGPT export 파일은 앱이 수정하지 않습니다.
-설정, 인덱스, 캐시는 Windows의 user app data 폴더 아래에 저장됩니다.
-마지막으로 선택한 export와 창 크기도 같은 설정 파일에 저장됩니다.
+<details>
+<summary>All screenshots use 100% synthetic demo data — no personal exports</summary>
+
+The showcase screenshots above are rendered directly in the app UI using a fictional demo dataset and custom sample illustrations. No personal ChatGPT conversations, projects, or user images are included.
+
+</details>
+
+## Download & Portable Usage (Windows)
+
+Portable builds are published on [GitHub Releases](https://github.com/Ayumudayo/GPTExportViewer/releases):
+
+1. Download **`GPTExportViewer-v1.0.0-windows-x64-portable.zip`** (or standalone **`GPTExportViewer-v1.0.0-windows-x64.exe`**).
+2. *(Optional)* Verify file integrity against **`SHA256SUMS.txt`**:
+   ```powershell
+   Get-FileHash .\GPTExportViewer-v1.0.0-windows-x64-portable.zip -Algorithm SHA256
+   ```
+3. Unzip anywhere and run `GPTExportViewer.exe`. No installer or administrator rights required.
+4. Select the folder containing your extracted ChatGPT export folder(s) during onboarding (you can switch or rescan later from **Settings**).
+
+### Requirements
+
+- Windows 10 / Windows 11 (x64)
+- Microsoft Edge WebView2 Runtime (**110.0.1531.0** or later — preinstalled on Windows 11 and modern Windows 10)
+
+## Exported Folder Organization
+
+When batch-exporting **original images** or saving **original session JSON** files, GPTExportViewer organizes output into structured folders (empty folders are never created):
 
 ```text
-%LOCALAPPDATA%\GPTExportViewer
+<ExportName>-images/                     # Full export images
+├── General/
+│   └── 2026-11-17_Workspace_Setup/
+│       └── studio-desk.png
+├── Projects/
+│   └── API_Architecture/                # Uses your custom project alias if set
+│       ├── 2026-11-20_Event-Driven_Export_Pipeline/
+│       │   ├── cloud-architecture.png
+│       │   └── dashboard-ui.png
+│       └── _Project Library/            # Unlinked project-owned assets
+├── Other/                               # Custom GPTs, Group Chats, Codex
+└── _Library/                            # Unlinked library-only assets
+
+%LOCALAPPDATA%\GPTExportViewer\Saved Sessions\<export-id>\
+├── General\*.json
+├── Projects\<ProjectAlias>\*.json
+└── Other\*.json
 ```
 
-세션을 저장하면 앱 데이터 폴더 아래의 `Saved Sessions`에 JSON 파일이 생성됩니다.
+## Data & Privacy
 
-## 빌드
+- All indexing and viewing happen 100% offline on your machine; no telemetry or network upload occurs.
+- Application settings, search indexes, and thumbnail caches are stored inside Windows user app data:
+  ```text
+  %LOCALAPPDATA%\GPTExportViewer
+  ```
+- Exported sessions are saved under `%LOCALAPPDATA%\GPTExportViewer\Saved Sessions`.
 
-### 요구사항
+## Building from Source
 
-이 프로젝트는 Tauri/Rust 기반 Windows 데스크톱 앱입니다.
+### Prerequisites
 
-- Windows 10/11
-- Microsoft Edge WebView2 Runtime (110.0.1531.0 이상)
-- Node.js와 npm
-- Rust와 Cargo
-- Windows MSVC Build Tools
+- Windows 10 / 11 + WebView2 Runtime (`110.0.1531.0`+)
+- Node.js (v20 or v22 LTS) & npm
+- Rust & Cargo (stable)
+- Visual Studio C++ Build Tools (MSVC)
 
-### 명령어
+### Commands
 
 ```powershell
 npm install
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run desktop:dev
 npm run desktop:build
 ```
 
-빌드 결과물:
+Portable executable output:
 
 ```text
 src-tauri/target/release/GPTExportViewer.exe
 ```
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)** — see [LICENSE](LICENSE) for full terms.

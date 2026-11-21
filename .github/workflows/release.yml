@@ -1,0 +1,148 @@
+name: Release Portable Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Package & Publish Windows Portable
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Verify version matches release tag
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          if (-not $tag.StartsWith("v")) {
+            throw "Release tag '$tag' must start with 'v' (e.g. v1.0.0)."
+          }
+          $expectedVersion = $tag.Substring(1)
+
+          $pkgVersion = (Get-Content -Raw "package.json" | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content -Raw "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
+          $cargoToml = Get-Content -Raw "src-tauri/Cargo.toml"
+          $cargoMatch = [regex]::Match($cargoToml, '(?m)^version\s*=\s*"([^"]+)"')
+          if (-not $cargoMatch.Success) {
+            throw "Could not find package version in src-tauri/Cargo.toml"
+          }
+          $cargoVersion = $cargoMatch.Groups[1].Value
+
+          if ($pkgVersion -ne $expectedVersion -or $tauriVersion -ne $expectedVersion -or $cargoVersion -ne $expectedVersion) {
+            throw "Version mismatch for $tag (expected $expectedVersion): package.json=$pkgVersion, tauri.conf.json=$tauriVersion, Cargo.toml=$cargoVersion"
+          }
+
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_VERSION=$expectedVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Verified release version $expectedVersion for tag $tag"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run frontend test suite
+        run: npm test
+
+      - name: Run Rust test suite
+        shell: pwsh
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build release binary
+        shell: pwsh
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: npm run desktop:build
+
+      - name: Package portable zip, standalone exe, and SHA-256 checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = $env:RELEASE_VERSION
+          $stageDir = Join-Path "release-stage" "GPTExportViewer-v$ver-windows-x64-portable"
+          $outDir = "release-artifacts"
+          Remove-Item -Recurse -Force "release-stage", $outDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stageDir, $outDir -Force | Out-Null
+
+          $exePath = "src-tauri/target/release/GPTExportViewer.exe"
+          if (-not (Test-Path -LiteralPath $exePath)) {
+            throw "Built executable missing at $exePath"
+          }
+
+          Copy-Item -LiteralPath $exePath -Destination (Join-Path $stageDir "GPTExportViewer.exe")
+          Copy-Item -LiteralPath "README.md" -Destination (Join-Path $stageDir "README.md")
+          Copy-Item -LiteralPath "README.ko.md" -Destination (Join-Path $stageDir "README.ko.md")
+          Copy-Item -LiteralPath "LICENSE" -Destination (Join-Path $stageDir "LICENSE")
+
+          $zipPath = Join-Path $outDir "GPTExportViewer-v$ver-windows-x64-portable.zip"
+          $standaloneExePath = Join-Path $outDir "GPTExportViewer-v$ver-windows-x64.exe"
+          Compress-Archive -Path "$stageDir\*" -DestinationPath $zipPath -Force
+          Copy-Item -LiteralPath $exePath -Destination $standaloneExePath
+
+          .\scripts\Write-Sha256Sums.ps1 -Path @($zipPath, $standaloneExePath) -OutputPath (Join-Path $outDir "SHA256SUMS.txt")
+          Get-ChildItem $outDir | Select-Object Name, Length
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPTExportViewer-${{ env.RELEASE_TAG }}-windows-x64
+          path: release-artifacts/*
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:RELEASE_TAG
+          $assets = Get-ChildItem "release-artifacts" -File | ForEach-Object { $_.FullName }
+          $isPrerelease = $tag.Contains("-")
+
+          $releaseExists = $false
+          try {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) {
+              $releaseExists = $true
+            }
+          } catch {
+            $releaseExists = $false
+          }
+
+          if ($releaseExists) {
+            gh release upload $tag @assets --clobber
+          } else {
+            $flags = @("--title", "GPTExportViewer $tag", "--generate-notes")
+            if ($isPrerelease) {
+              $flags += "--prerelease"
+            }
+            gh release create $tag @assets @flags
+          }

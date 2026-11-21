@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const tauriConfig = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
@@ -7,6 +7,19 @@ const cargoToml = await readFile("src-tauri/Cargo.toml", "utf8");
 const libRs = await readFile("src-tauri/src/lib.rs", "utf8");
 const mainRs = await readFile("src-tauri/src/main.rs", "utf8");
 const readme = await readFile("README.md", "utf8");
+const readmeKo = await readFile("README.ko.md", "utf8");
+const license = await readFile("LICENSE", "utf8");
+const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
+const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
+
+const cargoVersionMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
+assert.ok(cargoVersionMatch, "Cargo.toml should declare a package version");
+assert.equal(packageJson.version, tauriConfig.version, "package.json and tauri.conf.json versions should match");
+assert.equal(packageJson.version, cargoVersionMatch[1], "package.json and Cargo.toml versions should match");
+assert.equal(packageJson.license, "GPL-3.0-only", "package.json should declare GPL-3.0-only license");
+assert.match(cargoToml, /license\s*=\s*"GPL-3\.0-only"/, "Cargo.toml should declare GPL-3.0-only license");
+assert.match(license, /GNU GENERAL PUBLIC LICENSE/, "LICENSE file should contain GNU GPL");
+assert.match(license, /Version 3, 29 June 2007/, "LICENSE file should be GPLv3");
 
 assert.equal(packageJson.scripts["desktop:dev"], "tauri dev");
 assert.equal(packageJson.scripts["desktop:build"], "tauri build --no-bundle");
@@ -42,6 +55,8 @@ assert.match(libRs, /get_library/, "Rust scaffold should register all boot-time 
 assert.match(libRs, /rescan_exports/, "Rust scaffold should register source folder rescanning");
 assert.match(libRs, /update_preferences/, "Rust scaffold should register selected export and window preference persistence");
 assert.match(libRs, /save_original_image/, "Rust scaffold should register original image saving");
+assert.match(libRs, /export_original_images/, "Rust scaffold should register batch original image exporting");
+assert.match(libRs, /open_exported_images_folder/, "Rust scaffold should register opening exported image folders");
 
 assert.match(readme, /Tauri\/Rust/, "Desktop docs should name Tauri/Rust as the primary target");
 assert.equal(readme.includes("Node server"), false, "Desktop docs should not document the removed Node API server");
@@ -52,5 +67,20 @@ assert.match(
   /src-tauri\/target\/release\/GPTExportViewer\.exe/,
   "Desktop docs should document the portable exe path"
 );
+assert.match(readme, /README\.ko\.md/, "English README should link to Korean README");
+assert.match(readmeKo, /README\.md/, "Korean README should link back to English README");
+assert.match(ciWorkflow, /npm test/, "CI workflow should run npm test");
+assert.match(ciWorkflow, /cargo test/, "CI workflow should run cargo test");
+assert.match(ciWorkflow, /desktop:build/, "CI workflow should verify desktop:build");
+assert.match(releaseWorkflow, /Write-Sha256Sums\.ps1/, "Release workflow should generate SHA256SUMS.txt");
+assert.match(releaseWorkflow, /desktop:build/, "Release workflow should build release binary");
+
+for (const shot of ["sessions-dark.png", "library-dark.png", "sessions-light.png"]) {
+  const shotPath = `assets/screenshots/${shot}`;
+  const info = await stat(shotPath);
+  assert.ok(info.size > 10000, `${shotPath} should be a non-empty rendered PNG screenshot`);
+  const bytes = await readFile(shotPath);
+  assert.equal(bytes.subarray(1, 4).toString("ascii"), "PNG", `${shotPath} should be a valid PNG file`);
+}
 
 console.log("desktop scaffold tests passed");

@@ -7,3 +7,7 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 docs/*
+scripts/demo-assets/
+scripts/demoData.mjs
+scripts/generate-demo-export.mjs
+scripts/capture-readme-screenshots.mjs
