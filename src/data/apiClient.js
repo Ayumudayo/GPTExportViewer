@@ -1,11 +1,13 @@
 export {
   assetUrl,
+  exportOriginalImages,
   fetchConversation,
   fetchConversations,
   fetchExports,
   fetchLibrary,
   fetchSettings,
   fetchStats,
+  openExportedImagesFolder,
   openSavedSessionsFolder,
   pickSourceFolder,
   rescanExports,

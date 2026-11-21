@@ -838,3 +838,748 @@ fn library_thumbnail_generator_downscales_and_caches_large_images() {
     assert_eq!(mime_cached, "image/jpeg");
     assert_eq!(bytes_cached, bytes);
 }
+
+#[test]
+fn conversations_skip_thoughts_reasoning_recap_nonfinal_and_empty_turns() {
+    let conv = json!({
+        "id": "conv-modern-skip",
+        "title": "Modern Skip Test",
+        "create_time": 1780000000,
+        "update_time": 1780000500,
+        "current_node": "n8",
+        "mapping": {
+            "n0": { "id": "n0", "parent": null, "children": ["n1"] },
+            "n1": {
+                "id": "n1",
+                "parent": "n0",
+                "children": ["n2"],
+                "message": {
+                    "id": "m1",
+                    "author": { "role": "user" },
+                    "content": { "content_type": "text", "parts": [""] },
+                    "metadata": {
+                        "attachments": [{ "id": "file_att1", "name": "handoff.md", "mime_type": "text/markdown" }]
+                    }
+                }
+            },
+            "n2": {
+                "id": "n2",
+                "parent": "n1",
+                "children": ["n3"],
+                "message": {
+                    "id": "m2",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "thoughts", "thoughts": [{ "summary": "Thinking", "content": "Secret" }] }
+                }
+            },
+            "n3": {
+                "id": "n3",
+                "parent": "n2",
+                "children": ["n4"],
+                "message": {
+                    "id": "m3",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "reasoning_recap", "content": "Thought for 5s" }
+                }
+            },
+            "n4": {
+                "id": "n4",
+                "parent": "n3",
+                "children": ["n5"],
+                "message": {
+                    "id": "m4",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "text", "parts": [""] }
+                }
+            },
+            "n5": {
+                "id": "n5",
+                "parent": "n4",
+                "children": ["n6"],
+                "message": {
+                    "id": "m5",
+                    "author": { "role": "assistant" },
+                    "channel": "commentary",
+                    "content": { "content_type": "text", "parts": ["Commentary channel hidden"] }
+                }
+            },
+            "n6": {
+                "id": "n6",
+                "parent": "n5",
+                "children": ["n7"],
+                "message": {
+                    "id": "m6",
+                    "author": { "role": "assistant" },
+                    "recipient": "python",
+                    "content": { "content_type": "code", "text": "print(1)" }
+                }
+            },
+            "n7": {
+                "id": "n7",
+                "parent": "n6",
+                "children": ["n8"],
+                "message": {
+                    "id": "m7",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "text", "parts": ["\u{E200}memcite\u{E201}"] }
+                }
+            },
+            "n8": {
+                "id": "n8",
+                "parent": "n7",
+                "children": [],
+                "message": {
+                    "id": "m8",
+                    "author": { "role": "assistant" },
+                    "channel": "final",
+                    "recipient": "all",
+                    "content": { "content_type": "text", "parts": ["Final visible answer"] }
+                }
+            }
+        }
+    });
+
+    let normalized = conversations::normalize::normalize_conversation(&conv).unwrap();
+    assert_eq!(normalized.total_messages, 2);
+    assert_eq!(normalized.messages[0].id, "m1");
+    assert_eq!(normalized.messages[0].asset_refs[0].file_id, "file_att1");
+    assert_eq!(normalized.messages[1].id, "m8");
+    assert_eq!(normalized.messages[1].text, "Final visible answer");
+}
+
+#[test]
+fn conversations_clean_pua_tokens_rich_tags_and_widgets_preserving_code() {
+    let raw = [
+        "Hello \u{E200}memcite\u{E201}\u{E200}entity\u{E202}[\"other\",\"TOSE\",\"Test\"]\u{E201}!",
+        "Check \u{E200}cite\u{E202}turn0search0\u{E201} and \u{E200}genui\u{E202}{\"citation\":{\"ref\":\"turn1view0\"}}\u{E201}.",
+        "Visit \u{E200}url\u{E202}Docs\u{E202}https://example.com/docs?utm_source=chatgpt.com\u{E201} and \u{E200}url\u{E202}Thread\u{E202}turn0search0\u{E201}.",
+        "Inline <Entity category=\"software\" value=\"spark\"/> with <Cite ref=\"turn0search0\"/> and <Link url=\"https://example.com/a?utm_source=chatgpt.com\" title=\"Alpha\"/> and <Link url=\"https://example.com/b\">Beta</Link>.",
+        "<CodeCite citation_id=\"1\"/><FileCite ref=\"turn0file0\"/><MemoryCite /><AsyncImage query=\"x\"/>",
+        "<MapWidgetV2 points={[{\"id\":\"a\",\"name\":\"Colosseum\",\"address\":\"Rome, Italy\"}]} carousel={{visibility:\"hidden\"}}/>",
+        "<box border radius=\"xl\" padding={3}>",
+        "  <row align=\"center\" gap={2}>",
+        "    <icon name=\"check-circle\" color=\"success\"/>",
+        "    <title>Status</title>",
+        "    <badge color=\"success\">OK</badge>",
+        "  </row>",
+        "  <divider color=\"subtle\"/>",
+        "  <grid columns={2}>",
+        "    {#each [{t:\"One\",d:\"Desc 1\"},{t:\"Two\",d:\"Desc 2\"}] as x}",
+        "      <box><text>{x.t}</text><text>{x.d}</text></box>",
+        "    {/each}",
+        "  </grid>",
+        "  <list marker=\"number\">",
+        "    <list-item>First step</list-item>",
+        "    <list-item>",
+        "      Second step",
+        "      ```text",
+        "      <config>\\keep_me<int>",
+        "      ```",
+        "    </list-item>",
+        "  </list>",
+        "  <table>",
+        "    <table-row><table-cell>Col</table-cell><table-cell>Val</table-cell></table-row>",
+        "    <table-row><table-cell>A</table-cell><table-cell>1 | 2</table-cell></table-row>",
+        "  </table>",
+        "  <svg viewBox=\"0 0 100 100\">",
+        "    <rect x=\"0\" y=\"0\" width=\"100\" height=\"100\"/>",
+        "    <text x=\"50\" y=\"50\">Diagram Label</text>",
+        "  </svg>",
+        "</box>",
+        "Inline code `std::vector<int>` stays untouched."
+    ]
+    .join("\n");
+
+    let metadata = json!({
+        "content_references": [
+            {
+                "type": "client_defined_widget"
+            },
+            {
+                "type": "grouped_webpages",
+                "items": [
+                    {
+                        "attribution": "ExifTool",
+                        "title": "ExifTool FAQ",
+                        "url": "https://exiftool.org/faq.html?utm_source=chatgpt.com",
+                        "refs": [{ "turn_index": 0, "ref_type": "search", "ref_index": 0 }]
+                    },
+                    {
+                        "attribution": "Probe",
+                        "title": "Probe",
+                        "url": "https://example.com/probe",
+                        "refs": [{ "turn_index": 1, "ref_type": "view", "ref_index": 0 }]
+                    }
+                ]
+            }
+        ]
+    });
+
+    let cleaned = conversations::text_cleanup::clean_message_text(&raw, &metadata);
+    assert!(!cleaned.contains('\u{E200}') && !cleaned.contains('\u{E201}') && !cleaned.contains('\u{E202}'));
+    assert!(!cleaned.contains("<Entity"));
+    assert!(!cleaned.contains("<Cite"));
+    assert!(!cleaned.contains("<Link"));
+    assert!(!cleaned.contains("<MapWidget"));
+    assert!(!cleaned.contains("<CodeCite"));
+    assert!(!cleaned.contains("<FileCite"));
+    assert!(!cleaned.contains("<MemoryCite"));
+    assert!(!cleaned.contains("<AsyncImage"));
+    assert!(!cleaned.contains("<box"));
+    assert!(!cleaned.contains("<svg"));
+    assert!(!cleaned.contains("{#each"));
+    assert!(cleaned.contains("TOSE"));
+    assert!(cleaned.contains("([ExifTool](https://exiftool.org/faq.html))"));
+    assert!(cleaned.contains("([Probe](https://example.com/probe))"));
+    assert!(cleaned.contains("[Docs](https://example.com/docs)"));
+    assert!(cleaned.contains("[Thread](https://exiftool.org/faq.html)"));
+    assert!(cleaned.contains("spark"));
+    assert!(cleaned.contains("[Alpha](https://example.com/a)"));
+    assert!(cleaned.contains("[Beta](https://example.com/b)"));
+    assert!(cleaned.contains("- **Colosseum** — Rome, Italy"));
+    assert!(cleaned.contains("✓ **Status** · `OK`"));
+    assert!(cleaned.contains("One"));
+    assert!(cleaned.contains("Desc 2"));
+    assert!(cleaned.contains("1. First step"));
+    assert!(cleaned.contains("2. Second step"));
+    assert!(cleaned.contains("```text\n<config>\\keep_me<int>\n```"));
+    assert!(cleaned.contains("| Col | Val |\n| --- | --- |\n| A | 1 \\| 2 |"));
+    assert!(cleaned.contains("- Diagram Label"));
+    assert!(cleaned.contains("`std::vector<int>`"));
+
+    let fence_pua = [
+        "```",
+        "code line",
+        "```\u{E200}filecite\u{E202}turn2file0\u{E201}",
+        "After <Entity value=\"keep\"/> and `<keep_code>` prose",
+        "```",
+        "other code",
+        "```\u{E200}cite\u{E202}turn0search0\u{E201}",
+    ]
+    .join("\n");
+    let fence_cleaned = conversations::text_cleanup::clean_message_text(&fence_pua, &metadata);
+    assert!(!fence_cleaned.contains('\u{E200}'));
+    assert!(!fence_cleaned.contains("<Entity"));
+    assert!(fence_cleaned.contains("```\ncode line\n```\nAfter keep and `<keep_code>` prose"));
+    assert!(fence_cleaned.contains("```\nother code\n```\n\n([ExifTool](https://exiftool.org/faq.html))"));
+}
+
+#[test]
+fn library_svg_support_timestamp_fallbacks_and_conversation_only_assets() {
+    let root = TempDir::new().unwrap();
+    let export_dir = root.path().join("modern-lib-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-modern",
+                "title": "Modern Library Session",
+                "create_time": 1780000000,
+                "update_time": 1780000100,
+                "current_node": "n1",
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "children": [],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "create_time": 1780000050,
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "sediment://file_no_orig", "content_type": "image_asset_pointer", "width": 320, "height": 240 },
+                                    { "asset_pointer": "sediment://file_conv_only", "content_type": "image_asset_pointer" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file_svg_1",
+                "file_name": "diagram.svg",
+                "mime_type": "image/svg+xml",
+                "record_creation_time": "2026-11-18T16:04:02.000Z",
+                "state": "ready",
+                "library_file_category": "image"
+            },
+            {
+                "file_id": "file_no_orig",
+                "file_name": "upload-without-orig.png",
+                "mime_type": "image/png",
+                "file_upload_time": "2026-11-17T10:00:00Z",
+                "state": "ready",
+                "library_file_category": "image"
+            }
+        ]),
+    );
+
+    write_json(
+        &export_dir.join("conversation_asset_file_names.json"),
+        &json!({ "file_conv_only.dat": "chat-only-pic.png" }),
+    );
+
+    fs::write(
+        export_dir.join("file_svg_1.dat"),
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360"/></svg>"#,
+    )
+    .unwrap();
+    fs::write(
+        export_dir.join("file_no_orig.dat"),
+        png_header_with_dimensions(320, 240),
+    )
+    .unwrap();
+    fs::write(
+        export_dir.join("file_conv_only.dat"),
+        png_header_with_dimensions(800, 600),
+    )
+    .unwrap();
+
+    assert_eq!(
+        library::mime::sniff_mime(&export_dir.join("file_svg_1.dat"), None).unwrap(),
+        "image/svg+xml"
+    );
+    assert_eq!(
+        library::dimensions::read_image_dimensions(&export_dir.join("file_svg_1.dat"), "image/svg+xml"),
+        Some((640, 360))
+    );
+
+    let export_item = exports::describe_export(&export_dir).unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let preloaded = library::index::preload_library_context(&export_item).unwrap();
+    let artifacts = conversations::summary_index::build_conversation_artifacts_with_context(
+        &export_item,
+        &cache_dir.path().join("convs.jsonl"),
+        &preloaded,
+    )
+    .unwrap();
+    let lib_index = library::index::build_library_index_with_context(
+        &export_item,
+        &preloaded,
+        &artifacts.conversation_titles,
+        &artifacts.conversation_assets,
+    )
+    .unwrap();
+
+    assert_eq!(lib_index.items.len(), 3);
+    assert_eq!(lib_index.items[0].file_id, "file_svg_1");
+    assert_eq!(lib_index.items[0].width, Some(640));
+    assert_eq!(lib_index.items[0].height, Some(360));
+    assert_eq!(lib_index.items[0].created_at.as_deref(), Some("2026-11-18T16:04:02.000Z"));
+
+    let fallback_linked = lib_index
+        .items
+        .iter()
+        .find(|item| item.file_id == "file_no_orig")
+        .unwrap();
+    assert_eq!(fallback_linked.source_state, "linked");
+    assert_eq!(fallback_linked.source_conversation_id.as_deref(), Some("conv-modern"));
+    assert_eq!(
+        fallback_linked.source_conversation_title.as_deref(),
+        Some("Modern Library Session")
+    );
+
+    let synth = lib_index
+        .items
+        .iter()
+        .find(|item| item.file_id == "file_conv_only")
+        .unwrap();
+    assert_eq!(synth.display_name, "chat-only-pic.png");
+    assert_eq!(synth.source_state, "linked");
+    assert_eq!(synth.width, Some(800));
+    assert_eq!(synth.height, Some(600));
+    assert_eq!(
+        synth.source_conversation_title.as_deref(),
+        Some("Modern Library Session")
+    );
+}
+
+#[test]
+fn exports_discover_sharded_conversations_group_chats_and_codex() {
+    let root = TempDir::new().unwrap();
+    let export_dir = root.path().join("sharded-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("export_manifest.json"),
+        &json!({
+            "version": 1,
+            "logical_files": {
+                "conversations.json": {
+                    "files": ["conversations-000.json", "conversations-001.json"],
+                    "shard_count": 2,
+                    "sharded": true
+                }
+            }
+        }),
+    );
+    write_json(
+        &export_dir.join("conversations-000.json"),
+        &json!([
+            {
+                "id": "conv-shard-0",
+                "title": "Shard Zero",
+                "create_time": 1710000000,
+                "update_time": 1710000010,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Zero"] } } }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("conversations-001.json"),
+        &json!([
+            {
+                "id": "conv-shard-1",
+                "title": "Shard One",
+                "create_time": 1710000100,
+                "update_time": 1710000110,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["One"] } } }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("group_chats.json"),
+        &json!({
+            "chats": [
+                {
+                    "id": "gc-1",
+                    "name": "Team Room",
+                    "created_at": "2026-10-29T07:33:30Z",
+                    "last_action_at": "2026-11-07T08:00:30Z",
+                    "messages": [
+                        { "id": "gm2", "role": "user", "text": "Second newest", "created_at": "2026-11-07T08:00:30Z", "attachments": [] },
+                        { "id": "gm1", "role": "user", "text": "First oldest", "created_at": "2026-10-29T07:33:45Z", "attachments": [] }
+                    ]
+                }
+            ]
+        }),
+    );
+    write_json(
+        &export_dir.join("codex.json"),
+        &json!([
+            {
+                "id": "task-1",
+                "title": "Codex Task",
+                "archived": true,
+                "turns": [
+                    { "id": "t1", "role": "user", "input_items": [{ "type": "message", "content": [{ "content_type": "text", "text": "Fix bug" }] }] },
+                    { "id": "t2", "role": "assistant", "output_items": [{ "type": "message", "content": [{ "content_type": "text", "text": "Fixed it." }] }] }
+                ]
+            }
+        ]),
+    );
+
+    let export_item = exports::scan_exports(&export_dir).unwrap().remove(0);
+    assert!(export_item.has_conversations);
+    assert_eq!(export_item.paths.conversation_files.len(), 2);
+    assert!(export_item.paths.group_chats.is_some());
+    assert!(export_item.paths.codex.is_some());
+
+    let cache_dir = TempDir::new().unwrap();
+    let jsonl = cache_dir.path().join("all.jsonl");
+    let artifacts = conversations::summary_index::build_conversation_artifacts(&export_item, &jsonl).unwrap();
+    assert_eq!(artifacts.index.items.len(), 4);
+
+    let &(gc_off, gc_len) = artifacts.offsets.get("gc-1").unwrap();
+    let gc_loaded = conversations::load::read_conversation_from_jsonl(&jsonl, gc_off, gc_len).unwrap();
+    assert_eq!(gc_loaded.title, "Team Room");
+    assert_eq!(gc_loaded.messages[0].text, "First oldest");
+    assert_eq!(gc_loaded.messages[1].text, "Second newest");
+
+    let &(cx_off, cx_len) = artifacts.offsets.get("task-1").unwrap();
+    let cx_loaded = conversations::load::read_conversation_from_jsonl(&jsonl, cx_off, cx_len).unwrap();
+    assert_eq!(cx_loaded.title, "Codex Task");
+    assert!(cx_loaded.archived);
+    assert_eq!(cx_loaded.messages[0].text, "Fix bug");
+    assert_eq!(cx_loaded.messages[1].text, "Fixed it.");
+}
+
+#[test]
+fn conversations_classify_regular_project_custom_gpt_group_chat_and_codex_with_project_stats() {
+    let root = TempDir::new().unwrap();
+    let export_dir = root.path().join("mixed-kinds-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-regular",
+                "title": "Regular Talk",
+                "create_time": 1710000000,
+                "update_time": 1710000010,
+                "memory_scope": "global_enabled",
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Hi"] } } }
+                }
+            },
+            {
+                "id": "conv-proj-1",
+                "title": "Server Quiz 1",
+                "conversation_template_id": "g-p-6ad9093a00d08191b3079e881628bf24",
+                "memory_scope": "global_enabled",
+                "create_time": 1710000100,
+                "update_time": 1710000200,
+                "is_archived": false,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Quiz"] } } }
+                }
+            },
+            {
+                "id": "conv-proj-2",
+                "title": "Project V2 Chat",
+                "conversation_template_id": "g-p-6ae615e03ea8819192e67016a714bd97",
+                "memory_scope": "project_v2",
+                "create_time": 1710000300,
+                "update_time": 1710000350,
+                "is_archived": true,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Hello"] } } }
+                }
+            },
+            {
+                "id": "conv-gpt",
+                "title": "Translator GPT",
+                "gizmo_id": "g-translator99",
+                "gizmo_type": "gpt",
+                "create_time": 1710000400,
+                "update_time": 1710000450,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Translate"] } } }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file_proj_doc",
+                "file_name": "Notes.html",
+                "mime_type": "text/html",
+                "gizmo_id": "g-p-6ad9093a00d08191b3079e881628bf24",
+                "is_project": true
+            },
+            {
+                "file_id": "file_proj_img",
+                "file_name": "diagram.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "gizmo_id": "g-p-6ad9093a00d08191b3079e881628bf24",
+                "is_project": true
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("group_chats.json"),
+        &json!({
+            "chats": [
+                {
+                    "id": "gc-room",
+                    "name": "Group Room",
+                    "created_at": "2026-11-01T00:00:00Z",
+                    "last_action_at": "2026-11-01T01:00:00Z",
+                    "messages": [{ "id": "gm1", "role": "user", "text": "Group msg", "created_at": "2026-11-01T01:00:00Z" }]
+                }
+            ]
+        }),
+    );
+    write_json(
+        &export_dir.join("codex.json"),
+        &json!([
+            {
+                "id": "cx-1",
+                "title": "Codex Job",
+                "turns": [{ "id": "t1", "role": "user", "input_items": [{ "content": [{ "content_type": "text", "text": "Run tests" }] }] }]
+            }
+        ]),
+    );
+
+    let export_item = exports::describe_export(&export_dir).unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    let preloaded = library::index::preload_library_context(&export_item).unwrap();
+    let jsonl = cache_dir.path().join("all.jsonl");
+    let artifacts = conversations::summary_index::build_conversation_artifacts_with_context(
+        &export_item,
+        &jsonl,
+        &preloaded,
+    )
+    .unwrap();
+    let lib_index = library::index::build_library_index_with_context(
+        &export_item,
+        &preloaded,
+        &artifacts.conversation_titles,
+        &artifacts.conversation_assets,
+    )
+    .unwrap();
+
+    let stats = &artifacts.index.stats;
+    assert_eq!(stats.total_conversations, 6);
+    assert_eq!(stats.regular_conversations, 1);
+    assert_eq!(stats.project_conversations, 2);
+    assert_eq!(stats.custom_gpt_conversations, 1);
+    assert_eq!(stats.group_chat_conversations, 1);
+    assert_eq!(stats.codex_conversations, 1);
+    assert_eq!(stats.projects.len(), 2);
+
+    assert_eq!(stats.projects[0].id, "g-p-6ae615e03ea8819192e67016a714bd97");
+    assert_eq!(stats.projects[0].conversation_count, 1);
+    assert_eq!(stats.projects[0].archived_count, 1);
+    assert_eq!(stats.projects[0].sample_title.as_deref(), Some("Project V2 Chat"));
+
+    assert_eq!(stats.projects[1].id, "g-p-6ad9093a00d08191b3079e881628bf24");
+    assert_eq!(stats.projects[1].conversation_count, 1);
+    assert_eq!(stats.projects[1].file_count, 2);
+
+    assert_eq!(lib_index.items.len(), 1);
+    assert_eq!(
+        lib_index.items[0].project_id.as_deref(),
+        Some("g-p-6ad9093a00d08191b3079e881628bf24")
+    );
+}
+
+#[test]
+fn library_export_sanitizes_and_deduplicates_original_image_filenames() {
+    let dir = TempDir::new().unwrap();
+    let mut used = std::collections::HashSet::new();
+
+    assert_eq!(
+        library::export::sanitize_image_filename("file_abc.dat", "file_abc", "image/webp"),
+        "file_abc.webp"
+    );
+    assert_eq!(
+        library::export::sanitize_image_filename("f61d0d67-922a", "f61d0d67", "image/jpeg"),
+        "f61d0d67-922a.jpg"
+    );
+    assert_eq!(
+        library::export::sanitize_image_filename("Report v1.2", "file_rv", "image/png"),
+        "Report v1.2.png"
+    );
+    assert_eq!(
+        library::export::sanitize_image_filename("CON.png", "file_con_1", "image/png"),
+        "file_con_1.png"
+    );
+    assert_eq!(
+        library::export::sanitize_image_filename(" diagram<1>:final?.svg ", "file_s1", "image/svg+xml"),
+        "diagram_1__final_.svg"
+    );
+
+    let first = library::export::unique_image_filename(
+        dir.path(),
+        &mut used,
+        "image.png",
+        "file_1",
+        "image/png",
+    );
+    let second = library::export::unique_image_filename(
+        dir.path(),
+        &mut used,
+        "IMAGE.PNG",
+        "file_2",
+        "image/png",
+    );
+    fs::write(dir.path().join("image (3).png"), b"existing").unwrap();
+    let third = library::export::unique_image_filename(
+        dir.path(),
+        &mut used,
+        "image.png",
+        "file_3",
+        "image/png",
+    );
+    assert_eq!(first, "image.png");
+    assert_eq!(second, "IMAGE (2).png");
+    assert_eq!(third, "image (4).png");
+}
+
+#[test]
+fn conversations_normalize_file_service_uri_preserves_actual_file_id() {
+    let raw = json!({
+        "id": "conv-file-service",
+        "title": "URI Schemes",
+        "mapping": {
+            "n1": {
+                "id": "n1",
+                "parent": null,
+                "message": {
+                    "id": "m1",
+                    "author": { "role": "user" },
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            { "asset_pointer": "file-service://file-Abc123", "content_type": "image_asset_pointer" },
+                            { "asset_pointer": "file-service://file_0001", "content_type": "image_asset_pointer" },
+                            { "asset_pointer": "sediment://file_0002", "content_type": "image_asset_pointer" }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+    let conv = conversations::normalize::normalize_conversation(&raw).unwrap();
+    assert_eq!(conv.messages.len(), 1);
+    let ids: Vec<_> = conv.messages[0]
+        .parts
+        .iter()
+        .filter_map(|part| part.file_id.as_deref())
+        .collect();
+    assert_eq!(ids, vec!["file-Abc123", "file_0001", "file_0002"]);
+}
+
+#[test]
+fn foundations_folder_naming_helpers_format_dates_aliases_and_collisions() {
+    assert_eq!(
+        fs_guards::iso_date_prefix(Some("2026-11-18T16:29:11Z")),
+        Some("2026-11-18")
+    );
+    assert_eq!(fs_guards::iso_date_prefix(Some("unknown-date")), None);
+    assert_eq!(
+        fs_guards::session_folder_base(
+            "CON",
+            "conv-con",
+            Some("2026-11-18T16:29:11Z"),
+            None,
+        ),
+        "2026-11-18_export"
+    );
+    assert_eq!(
+        fs_guards::session_folder_base(
+            "UI & Quiz: Part 1?",
+            "conv-1",
+            None,
+            Some("2026-03-14T10:00:00Z"),
+        ),
+        "2026-03-14_UI_&_Quiz_Part_1"
+    );
+    assert_eq!(fs_guards::safe_folder_segment("NUL", "fallback", 48), "export");
+    let long_seg = fs_guards::safe_folder_segment(&"가".repeat(60), "fallback", 48);
+    assert_eq!(long_seg.chars().count(), 48);
+
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("g-p-aaa111".to_string(), "Study Notes".to_string());
+    aliases.insert("g-p-bbb222".to_string(), "study notes".to_string());
+    let map = fs_guards::build_project_folder_map(
+        &[
+            "g-p-bbb222".to_string(),
+            "g-p-aaa111".to_string(),
+            "g-p-ccc333".to_string(),
+        ],
+        &aliases,
+    );
+    assert_eq!(map.get("g-p-aaa111").map(String::as_str), Some("Study_Notes"));
+    assert_eq!(map.get("g-p-bbb222").map(String::as_str), Some("study_notes (2)"));
+    assert_eq!(map.get("g-p-ccc333").map(String::as_str), Some("Project_ccc333"));
+}

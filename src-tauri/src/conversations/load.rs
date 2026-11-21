@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -5,15 +6,19 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 
-use crate::cache::{file_fingerprint, read_json, write_json_compact_atomic, FileFingerprint};
+use crate::cache::{export_fingerprint, read_json, write_json_compact_atomic, ExportFingerprint};
 use crate::errors::{io_error, AppError, AppResult};
 use crate::fs_guards::safe_cache_name;
+use crate::library::index::preload_library_context;
 use crate::models::{Conversation, ExportItem, MessageRange};
 
 use super::normalize::{get_conversation_id, normalize_conversation_with_fallback};
-use super::summary_index::stream_conversation_values;
+use super::summary_index::{
+    enrich_and_attach_conversation_media, load_supplementary_conversations,
+    stream_export_conversation_values,
+};
 
-const CONVERSATION_CACHE_SCHEMA_VERSION: &[u8] = b"conversation-cache-v3";
+const CONVERSATION_CACHE_SCHEMA_VERSION: &[u8] = b"conversation-cache-v6";
 
 pub fn load_conversation(
     export_item: &ExportItem,
@@ -22,24 +27,46 @@ pub fn load_conversation(
     start: usize,
     limit: usize,
 ) -> AppResult<Option<Conversation>> {
-    let fingerprint = file_fingerprint(&export_item.paths.conversations)?;
+    let fingerprint = export_fingerprint(export_item)?;
     let cache_file =
         conversation_cache_path(cache_dir, &export_item.id, conversation_id, &fingerprint);
     let normalized = match read_json::<Conversation>(&cache_file)? {
         Some(conversation) => conversation,
         None => {
             let mut found: Option<(usize, Value)> = None;
-            stream_conversation_values(&export_item.paths.conversations, |index, conversation| {
-                if get_conversation_id(&conversation, &index.to_string()) == conversation_id {
-                    found = Some((index, conversation));
-                    return Ok(ControlFlow::Break(()));
-                }
-                Ok(ControlFlow::Continue(()))
-            })?;
-            let Some((index, found)) = found else {
-                return Ok(None);
+            if export_item.has_conversations {
+                stream_export_conversation_values(export_item, |index, conversation| {
+                    if get_conversation_id(&conversation, &index.to_string()) == conversation_id {
+                        found = Some((index, conversation));
+                        return Ok(ControlFlow::Break(()));
+                    }
+                    Ok(ControlFlow::Continue(()))
+                })?;
+            }
+            let mut normalized = if let Some((index, found)) = found {
+                normalize_conversation_with_fallback(&found, &index.to_string())?
+            } else {
+                let supplementary =
+                    load_supplementary_conversations(export_item, &HashSet::new())?;
+                let Some(found_supp) = supplementary
+                    .into_iter()
+                    .find(|conv| conv.id == conversation_id)
+                else {
+                    return Ok(None);
+                };
+                found_supp
             };
-            let normalized = normalize_conversation_with_fallback(&found, &index.to_string())?;
+            let preloaded = preload_library_context(export_item)?;
+            let gen_images = preloaded
+                .generated_by_thread
+                .get(&normalized.id)
+                .map(Vec::as_slice);
+            enrich_and_attach_conversation_media(
+                &mut normalized,
+                &export_item.path,
+                &preloaded.display_names_by_file_id,
+                gen_images,
+            );
             write_json_compact_atomic(&cache_file, &normalized)?;
             normalized
         }
@@ -71,6 +98,10 @@ pub fn slice_conversation_page(
         model: normalized.model.clone(),
         archived: normalized.archived,
         starred: normalized.starred,
+        kind: normalized.kind.clone(),
+        project_id: normalized.project_id.clone(),
+        gizmo_id: normalized.gizmo_id.clone(),
+        memory_scope: normalized.memory_scope.clone(),
         total_messages: total,
         messages,
         range: Some(MessageRange {
@@ -98,16 +129,19 @@ fn conversation_cache_path(
     cache_dir: &Path,
     export_id: &str,
     conversation_id: &str,
-    fingerprint: &FileFingerprint,
+    fingerprint: &ExportFingerprint,
 ) -> PathBuf {
     let digest = {
         let mut hasher = Sha1::new();
         hasher.update(CONVERSATION_CACHE_SCHEMA_VERSION);
         hasher.update(conversation_id.as_bytes());
-        hasher.update(fingerprint.path.to_string_lossy().as_bytes());
-        hasher.update(fingerprint.size.unwrap_or_default().to_le_bytes());
-        hasher.update(fingerprint.mtime_ms.unwrap_or_default().to_le_bytes());
-        hasher.update([u8::from(fingerprint.missing)]);
+        for (key, fp) in fingerprint {
+            hasher.update(key.as_bytes());
+            hasher.update(fp.path.to_string_lossy().as_bytes());
+            hasher.update(fp.size.unwrap_or_default().to_le_bytes());
+            hasher.update(fp.mtime_ms.unwrap_or_default().to_le_bytes());
+            hasher.update([u8::from(fp.missing)]);
+        }
         format!("{:x}", hasher.finalize())[..16].to_string()
     };
     cache_dir

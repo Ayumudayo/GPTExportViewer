@@ -5,7 +5,7 @@ use crate::errors::{io_error, AppResult};
 
 pub fn sniff_mime(path: &Path, fallback: Option<&str>) -> AppResult<String> {
     let mut file = std::fs::File::open(path).map_err(|error| io_error(path, error))?;
-    let mut header = [0_u8; 16];
+    let mut header = [0_u8; 256];
     let count = file
         .read(&mut header)
         .map_err(|error| io_error(path, error))?;
@@ -21,6 +21,8 @@ pub fn sniff_mime(path: &Path, fallback: Option<&str>) -> AppResult<String> {
         Some("image/webp")
     } else if bytes.starts_with(b"BM") {
         Some("image/bmp")
+    } else if is_svg_header(bytes) {
+        Some("image/svg+xml")
     } else {
         None
     };
@@ -30,6 +32,13 @@ pub fn sniff_mime(path: &Path, fallback: Option<&str>) -> AppResult<String> {
         .filter(|value| !value.is_empty())
         .unwrap_or("application/octet-stream")
         .to_string())
+}
+
+fn is_svg_header(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim_start_matches('\u{FEFF}').trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("<svg") || (lower.starts_with("<?xml") && lower.contains("<svg"))
 }
 
 pub fn infer_mime_from_name(name: &str) -> Option<&'static str> {
@@ -46,6 +55,8 @@ pub fn infer_mime_from_name(name: &str) -> Option<&'static str> {
         Some("image/bmp")
     } else if lower.ends_with(".avif") {
         Some("image/avif")
+    } else if lower.ends_with(".svg") {
+        Some("image/svg+xml")
     } else {
         None
     }

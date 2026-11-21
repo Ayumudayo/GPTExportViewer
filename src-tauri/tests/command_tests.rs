@@ -383,6 +383,10 @@ fn commands_save_single_session_writes_original_json_under_app_data() {
     assert_eq!(item.format, "original");
     assert!(response.destination_dir.ends_with(&export_id));
     assert!(item.path.starts_with(&response.destination_dir));
+    assert_eq!(
+        item.path.parent().unwrap().file_name().unwrap().to_string_lossy(),
+        "General"
+    );
     assert_eq!(response.progress.completed, 1);
     assert_eq!(response.progress.total, 1);
 
@@ -786,6 +790,1305 @@ fn commands_read_thumbnail_payload_serves_resized_jpeg_for_large_png() {
     let decoded = image::load_from_memory(&payload.bytes).unwrap();
     assert_eq!(decoded.width(), 384);
     assert_eq!(decoded.height(), 288);
+}
+
+#[test]
+fn commands_attach_generated_library_images_mark_missing_parts_and_save_supplementary_sessions() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("modern-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-gen",
+                "title": "Portrait Generation",
+                "create_time": 1780000000,
+                "update_time": 1780000500,
+                "current_node": "n3",
+                "default_model_slug": "gpt-6-thinking",
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "children": ["n2"],
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "create_time": 1780000010,
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "sediment://file_missing_upload", "content_type": "image_asset_pointer", "width": 800, "height": 1000 },
+                                    "Make a portrait"
+                                ]
+                            }
+                        }
+                    },
+                    "n2": {
+                        "id": "n2",
+                        "parent": "n1",
+                        "children": ["n3"],
+                        "message": {
+                            "id": "m2",
+                            "author": { "role": "assistant" },
+                            "create_time": 1780000020,
+                            "content": { "content_type": "thoughts", "thoughts": [{ "summary": "Thinking" }] }
+                        }
+                    },
+                    "n3": {
+                        "id": "n3",
+                        "parent": "n2",
+                        "children": [],
+                        "message": {
+                            "id": "m3",
+                            "author": { "role": "user" },
+                            "create_time": 1780000200,
+                            "content": { "content_type": "text", "parts": ["Looks nice!"] }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file_gen_ok",
+                "file_name": "portrait_out.png",
+                "mime_type": "image/png",
+                "file_size_bytes": 8,
+                "width": 1024,
+                "height": 1536,
+                "created_at": "2026-05-28T20:28:00.000Z",
+                "state": "ready",
+                "library_file_category": "image",
+                "image_gen_generation_id": "gen_1",
+                "origination_thread_id": "conv-gen",
+                "origination_message_id": "missing-node-id"
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("conversation_asset_file_names.json"),
+        &json!({}),
+    );
+    write_json(
+        &export_dir.join("group_chats.json"),
+        &json!({
+            "chats": [
+                {
+                    "id": "gc-save",
+                    "name": "Group Room",
+                    "created_at": "2026-11-01T10:00:00Z",
+                    "last_action_at": "2026-11-01T10:05:00Z",
+                    "messages": [
+                        { "id": "gm1", "role": "user", "text": "Hello room", "created_at": "2026-11-01T10:00:00Z", "attachments": [] }
+                    ]
+                }
+            ]
+        }),
+    );
+    write_json(
+        &export_dir.join("codex.json"),
+        &json!([
+            {
+                "id": "codex-save",
+                "title": "Codex Fix",
+                "archived": true,
+                "turns": [
+                    { "id": "t1", "role": "user", "input_items": [{ "type": "message", "content": [{ "content_type": "text", "text": "Fix" }] }] }
+                ]
+            }
+        ]),
+    );
+    fs::write(
+        export_dir.join("file_gen_ok.dat"),
+        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    )
+    .unwrap();
+
+    let state = AppState::new_with_app_data(
+        app_data.path(),
+        Some(root.path().to_path_buf()),
+    )
+    .unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let conv = state
+        .get_conversation_response(Some(export_id.clone()), "conv-gen".to_string(), Some(0), Some(10))
+        .unwrap();
+    assert_eq!(conv.total_messages, 3);
+    assert_eq!(conv.messages[0].parts[0].exists, Some(false));
+    assert_eq!(conv.messages[1].content_type.as_deref(), Some("generated_image"));
+    assert_eq!(conv.messages[1].parts[0].file_id.as_deref(), Some("file_gen_ok"));
+    assert_eq!(conv.messages[1].parts[0].exists, Some(true));
+    assert_eq!(conv.messages[2].text, "Looks nice!");
+
+    let lib = state
+        .get_library_response(
+            Some(export_id.clone()),
+            Some("Portrait Generation".to_string()),
+            Some("linked".to_string()),
+            Some(0),
+            Some(10),
+        )
+        .unwrap();
+    assert_eq!(lib.items.len(), 1);
+    assert_eq!(
+        lib.items[0].item.source_conversation_title.as_deref(),
+        Some("Portrait Generation")
+    );
+
+    let saved = state
+        .save_sessions_response(
+            Some(export_id),
+            vec!["gc-save".to_string(), "codex-save".to_string()],
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(saved.items.len(), 2);
+    assert!(saved.items.iter().all(|item| item.path.is_file()));
+    assert!(saved.items.iter().all(|item| {
+        item.path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .is_some_and(|name| name == "Other")
+    }));
+}
+
+#[test]
+fn commands_real_export_smoke_when_env_set() {
+    let Some(real_path) = std::env::var_os("GPT_EXPORT_REAL_PATH") else {
+        return;
+    };
+    let export_root = std::path::PathBuf::from(real_path);
+    assert!(export_root.is_dir(), "GPT_EXPORT_REAL_PATH must point to a directory");
+
+    let app_data = TempDir::new().unwrap();
+    let state = AppState::new_with_app_data(app_data.path(), Some(export_root.clone())).unwrap();
+    let exports = state.get_exports_response().unwrap().exports;
+    assert!(!exports.is_empty(), "Expected at least one export");
+    let export_id = exports[0].id.clone();
+
+    let stats = state.get_stats_response(Some(export_id.clone())).unwrap();
+    assert!(!stats.cache.hit, "Cold index should report cache miss");
+    assert!(stats.conversations.total_conversations > 0);
+    assert_eq!(
+        stats.conversations.regular_conversations
+            + stats.conversations.project_conversations
+            + stats.conversations.custom_gpt_conversations
+            + stats.conversations.group_chat_conversations
+            + stats.conversations.codex_conversations,
+        stats.conversations.total_conversations
+    );
+
+    let mut cursor = 0usize;
+    let mut conv_ids = Vec::new();
+    loop {
+        let page = state
+            .get_conversations_response(Some(export_id.clone()), None, Some("all".to_string()), Some(cursor), Some(100))
+            .unwrap();
+        for item in &page.items {
+            assert!(
+                !item.preview.contains('\u{E200}') && !item.preview.contains('\u{E201}'),
+                "Preview leaked PUA token in {}: {}",
+                item.id,
+                item.preview
+            );
+            conv_ids.push(item.id.clone());
+        }
+        if page.page.next_cursor.is_none() {
+            break;
+        }
+        cursor += page.items.len();
+    }
+    assert_eq!(conv_ids.len(), stats.conversations.total_conversations);
+    assert_eq!(
+        stats.conversations.regular_conversations
+            + stats.conversations.project_conversations
+            + stats.conversations.custom_gpt_conversations
+            + stats.conversations.group_chat_conversations
+            + stats.conversations.codex_conversations,
+        stats.conversations.total_conversations,
+        "Conversation kind buckets must partition total_conversations"
+    );
+    let project_page = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("project".to_string()),
+            None,
+            Some(0),
+            Some(100),
+        )
+        .unwrap();
+    assert_eq!(project_page.page.total, stats.conversations.project_conversations);
+    let mut grouped_sum = 0usize;
+    for proj in &stats.conversations.projects {
+        assert!(proj.id.starts_with("g-p-"));
+        let single_proj_page = state
+            .get_conversations_filtered_response(
+                Some(export_id.clone()),
+                None,
+                Some("all".to_string()),
+                Some("project".to_string()),
+                Some(proj.id.clone()),
+                Some(0),
+                Some(100),
+            )
+            .unwrap();
+        assert_eq!(single_proj_page.page.total, proj.conversation_count);
+        grouped_sum += proj.conversation_count;
+    }
+    assert_eq!(grouped_sum, stats.conversations.project_conversations);
+
+    let mut total_gen_attached = 0usize;
+    let mut total_missing_img_parts = 0usize;
+    for conv_id in &conv_ids {
+        let mut start = 0usize;
+        loop {
+            let conv = state
+                .get_conversation_response(Some(export_id.clone()), conv_id.clone(), Some(start), Some(200))
+                .unwrap();
+            for msg in &conv.messages {
+                assert!(
+                    !matches!(msg.content_type.as_deref(), Some("thoughts" | "reasoning_recap")),
+                    "Internal reasoning message leaked in {conv_id}"
+                );
+                assert!(
+                    !msg.text.contains('\u{E200}') && !msg.text.contains('\u{E201}') && !msg.text.contains('\u{E202}'),
+                    "Message leaked PUA token in {conv_id} ({})",
+                    msg.id
+                );
+                let prose = strip_code_blocks_for_test(&msg.text);
+                for forbidden in [
+                    "<Entity", "<Cite", "<Link", "<MapWidget", "<CodeCite", "<FileCite",
+                    "<MemoryCite", "<AsyncImage", "<box", "<row", "<grid", "{#each",
+                ] {
+                    assert!(
+                        !prose.contains(forbidden),
+                        "Message leaked {forbidden} outside code in {conv_id} ({}):\n{}",
+                        msg.id,
+                        &prose[..prose.len().min(300)]
+                    );
+                }
+                if msg.content_type.as_deref() == Some("generated_image") {
+                    total_gen_attached += msg.parts.len();
+                }
+                for part in &msg.parts {
+                    if part.part_type == "image" && part.exists == Some(false) {
+                        total_missing_img_parts += 1;
+                    }
+                }
+            }
+            match conv.range.and_then(|r| r.next_start) {
+                Some(next) => start = next,
+                None => break,
+            }
+        }
+    }
+
+    let mut lib_cursor = 0usize;
+    let mut lib_items = Vec::new();
+    loop {
+        let page = state
+            .get_library_response(Some(export_id.clone()), None, Some("all".to_string()), Some(lib_cursor), Some(120))
+            .unwrap();
+        lib_items.extend(page.items);
+        if page.page.next_cursor.is_none() {
+            break;
+        }
+        lib_cursor += 120;
+    }
+    assert_eq!(lib_items.len(), stats.library.total_images);
+    for pair in lib_items.windows(2) {
+        assert!(
+            pair[0].item.created_at >= pair[1].item.created_at,
+            "Library items out of descending order: {:?} < {:?}",
+            pair[0].item.created_at,
+            pair[1].item.created_at
+        );
+    }
+    for item in &lib_items {
+        if item.item.in_chat {
+            assert!(
+                item.item.source_conversation_title.as_deref().is_some_and(|t| !t.is_empty()),
+                "Linked image {} missing source_conversation_title",
+                item.item.file_id
+            );
+        }
+        if item.item.mime == "image/svg+xml" && item.item.exists {
+            let thumb = state.read_thumbnail_payload(&export_id, &item.item.file_id).unwrap();
+            assert_eq!(thumb.mime_type, "image/svg+xml");
+        }
+    }
+
+    // Verify planning and read-only batch image extraction into TempDir on real data
+    let (_pub_exp, export_plan) = state
+        .plan_export_original_images(Some(export_id.clone()), "export", None, None)
+        .unwrap();
+    assert_eq!(export_plan.candidates.len(), stats.library.total_images);
+    if let Some(first_proj) = stats.conversations.projects.first() {
+        let (_p, proj_plan) = state
+            .plan_export_original_images(
+                Some(export_id.clone()),
+                "project",
+                None,
+                Some(first_proj.id.clone()),
+            )
+            .unwrap();
+        if proj_plan.existing_count > 0 {
+            let real_out = TempDir::new().unwrap();
+            let mut progress_hits = 0usize;
+            let res = state
+                .export_original_images_to_dir(
+                    Some(export_id.clone()),
+                    "project",
+                    None,
+                    Some(first_proj.id.clone()),
+                    real_out.path().to_path_buf(),
+                    |_| progress_hits += 1,
+                )
+                .unwrap();
+            assert_eq!(res.exported_count, proj_plan.existing_count);
+            assert!(res.total_bytes > 0);
+            assert!(progress_hits >= 1);
+            let out_dir = res.destination_dir.as_ref().unwrap();
+            assert_no_empty_dirs(out_dir);
+            assert_eq!(collect_files_recursive(out_dir).len(), res.exported_count);
+        }
+    }
+
+    // Verify warm disk cache hit
+    let warm_state = AppState::new_with_app_data(app_data.path(), Some(export_root)).unwrap();
+    let warm_stats = warm_state.get_stats_response(Some(export_id)).unwrap();
+    assert!(warm_stats.cache.hit, "Warm reload should hit disk cache");
+
+    let other_count = stats.conversations.custom_gpt_conversations
+        + stats.conversations.group_chat_conversations
+        + stats.conversations.codex_conversations;
+    eprintln!(
+        "REAL_EXPORT_OK conversations={} regular={} projects={} project_chats={} other={} messages={} library_images={} linked={} gen_attached={} missing_img_parts={} newest_lib_at={:?}",
+        stats.conversations.total_conversations,
+        stats.conversations.regular_conversations,
+        stats.conversations.projects.len(),
+        stats.conversations.project_conversations,
+        other_count,
+        stats.conversations.total_messages,
+        stats.library.total_images,
+        stats.library.linked_images,
+        total_gen_attached,
+        total_missing_img_parts,
+        lib_items.first().and_then(|item| item.item.created_at.as_deref())
+    );
+}
+
+#[test]
+fn commands_filter_conversations_by_scope_project_id_and_persist_project_aliases() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("project-scope-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-reg",
+                "title": "General Topic",
+                "create_time": 1710000000,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["General question"] } } }
+                }
+            },
+            {
+                "id": "conv-p1",
+                "title": "Quiz Alpha",
+                "conversation_template_id": "g-p-alpha123456",
+                "create_time": 1710000200,
+                "update_time": 1710000300,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Alpha body"] } } }
+                }
+            },
+            {
+                "id": "conv-p2",
+                "title": "Notes Beta",
+                "conversation_template_id": "g-p-beta789012",
+                "create_time": 1710000400,
+                "update_time": 1710000500,
+                "mapping": {
+                    "n1": { "id": "n1", "parent": null, "message": { "id": "m1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Beta body"] } } }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("codex.json"),
+        &json!([
+            {
+                "id": "cx-job",
+                "title": "Fix Lint",
+                "turns": [{ "id": "t1", "role": "user", "input_items": [{ "content": [{ "content_type": "text", "text": "Fix lint" }] }] }]
+            }
+        ]),
+    );
+
+    let state = AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let reg = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("regular".to_string()),
+            None,
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    assert_eq!(reg.items.len(), 1);
+    assert_eq!(reg.items[0].id, "conv-reg");
+
+    let projs = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("project".to_string()),
+            None,
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    assert_eq!(projs.items.len(), 2);
+
+    let alpha_only = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("project".to_string()),
+            Some("g-p-alpha123456".to_string()),
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    assert_eq!(alpha_only.items.len(), 1);
+    assert_eq!(alpha_only.items[0].id, "conv-p1");
+
+    let both_projects = state
+        .get_conversations_filtered_multi_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("project".to_string()),
+            Some(vec![
+                "g-p-alpha123456".to_string(),
+                "g-p-beta789012".to_string(),
+            ]),
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    let mut both_ids: Vec<&str> = both_projects.items.iter().map(|i| i.id.as_str()).collect();
+    both_ids.sort_unstable();
+    assert_eq!(both_ids, vec!["conv-p1", "conv-p2"]);
+
+    let other = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            None,
+            Some("all".to_string()),
+            Some("other".to_string()),
+            None,
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    assert_eq!(other.items.len(), 1);
+    assert_eq!(other.items[0].id, "cx-job");
+
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("g-p-alpha123456".to_string(), "Server Quiz".to_string());
+    aliases.insert("g-p-beta789012".to_string(), "UI Study".to_string());
+    let pref_res = state
+        .update_preferences_full_response(None, None, Some(aliases))
+        .unwrap();
+    assert_eq!(
+        pref_res.settings.project_aliases.get("g-p-alpha123456").map(String::as_str),
+        Some("Server Quiz")
+    );
+
+    let alias_search = state
+        .get_conversations_filtered_response(
+            Some(export_id.clone()),
+            Some("server quiz".to_string()),
+            Some("all".to_string()),
+            Some("all".to_string()),
+            None,
+            Some(0),
+            Some(50),
+        )
+        .unwrap();
+    assert_eq!(alias_search.items.len(), 1);
+    assert_eq!(alias_search.items[0].id, "conv-p1");
+
+    let mut clear = std::collections::BTreeMap::new();
+    clear.insert("g-p-beta789012".to_string(), "   ".to_string());
+    let updated = state.update_preferences_full_response(None, None, Some(clear)).unwrap();
+    assert!(!updated.settings.project_aliases.contains_key("g-p-beta789012"));
+
+    let reloaded = AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let reloaded_aliases = reloaded.get_settings_response().unwrap().settings.project_aliases;
+    assert_eq!(reloaded_aliases.get("g-p-alpha123456").map(String::as_str), Some("Server Quiz"));
+    assert!(!reloaded_aliases.contains_key("g-p-beta789012"));
+}
+
+#[test]
+fn commands_export_original_images_by_chat_project_and_export_scopes() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("batch-images-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    let png_bytes_a = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02];
+    let png_bytes_b = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x03, 0x04, 0x05];
+    let svg_bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\"></svg>".to_vec();
+    let jpeg_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10];
+    let proj_lib_png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x07];
+    let lib_only_png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x09];
+
+    fs::write(export_dir.join("file_chat_a.dat"), &png_bytes_a).unwrap();
+    fs::write(export_dir.join("file_chat_dup.dat"), &png_bytes_b).unwrap();
+    fs::write(export_dir.join("file_proj_svg.dat"), &svg_bytes).unwrap();
+    fs::write(export_dir.join("file_proj_conv_only.dat"), &jpeg_bytes).unwrap();
+    fs::write(export_dir.join("file_proj_lib_only.dat"), &proj_lib_png).unwrap();
+    fs::write(export_dir.join("file_lib_only.dat"), &lib_only_png).unwrap();
+    fs::write(export_dir.join("file_notes_md.dat"), b"# Not an image").unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-chat",
+                "title": "Chat: Pics?",
+                "create_time": 1710000000,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_chat_a", "content_type": "image_asset_pointer" },
+                                    { "asset_pointer": "file-service://file_chat_dup", "content_type": "image_asset_pointer" },
+                                    { "asset_pointer": "file-service://file_chat_missing", "content_type": "image_asset_pointer" },
+                                    "look"
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [
+                                    { "id": "file_chat_a", "name": "image.png", "mimeType": "image/png" },
+                                    { "id": "file_chat_dup", "name": "image.png", "mimeType": "image/png" },
+                                    { "id": "file_chat_missing", "name": "missing.png", "mimeType": "image/png" },
+                                    { "id": "file_notes_md", "name": "notes.md", "mimeType": "text/markdown" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-proj",
+                "title": "Project Diagram Chat",
+                "conversation_template_id": "g-p-alpha123456",
+                "create_time": 1710000200,
+                "update_time": 1710000300,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m2",
+                            "author": { "role": "assistant" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "sediment://file_proj_conv_only", "content_type": "image_asset_pointer" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file_chat_a",
+                "file_name": "image.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "origination_thread_id": "conv-chat"
+            },
+            {
+                "file_id": "file_chat_dup",
+                "file_name": "image.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "origination_thread_id": "conv-chat"
+            },
+            {
+                "file_id": "file_proj_svg",
+                "file_name": "arch-diagram",
+                "mime_type": "image/svg+xml",
+                "library_file_category": "image",
+                "gizmo_id": "g-p-alpha123456",
+                "is_project": true,
+                "image_gen_generation_id": "gen_svg_1",
+                "origination_thread_id": "conv-proj"
+            },
+            {
+                "file_id": "file_proj_lib_only",
+                "file_name": "proj-lib.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "gizmo_id": "g-p-alpha123456",
+                "is_project": true
+            },
+            {
+                "file_id": "file_lib_only",
+                "file_name": "standalone.png",
+                "mime_type": "image/png",
+                "library_file_category": "image"
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("conversation_asset_file_names.json"),
+        &json!({ "file_proj_conv_only.dat": "photo-shot" }),
+    );
+
+    let state =
+        AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("g-p-alpha123456".to_string(), "Server Quiz".to_string());
+    state
+        .update_preferences_full_response(None, None, Some(aliases))
+        .unwrap();
+
+    // 1. Specific conversation scope: single chat saves directly into date-prefixed <YYYY-MM-DD>_<title>-images folder
+    let out_chat = TempDir::new().unwrap();
+    let mut chat_events = Vec::new();
+    let chat_res = state
+        .export_original_images_to_dir(
+            Some(export_id.clone()),
+            "conversations",
+            Some(vec!["conv-chat".to_string()]),
+            None,
+            out_chat.path().to_path_buf(),
+            |p| chat_events.push(p),
+        )
+        .unwrap();
+    assert_eq!(chat_res.scope, "conversations");
+    assert_eq!(chat_res.exported_count, 2);
+    assert_eq!(chat_res.skipped_missing, 1);
+    assert_eq!(
+        chat_res.total_bytes,
+        (png_bytes_a.len() + png_bytes_b.len()) as u64
+    );
+    let chat_dir = chat_res.destination_dir.as_ref().unwrap();
+    assert!(chat_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("2024-03-09_Chat_Pics"));
+    assert_eq!(std::fs::read(chat_dir.join("image.png")).unwrap(), png_bytes_a);
+    assert_eq!(
+        std::fs::read(chat_dir.join("image (2).png")).unwrap(),
+        png_bytes_b
+    );
+    assert!(!chat_dir.join("notes.md").exists());
+    assert_no_empty_dirs(chat_dir);
+    assert_eq!(chat_events.len(), 2);
+
+    // 2. Project scope: separates chat session folders and _Project Library
+    let out_proj = TempDir::new().unwrap();
+    let proj_res = state
+        .export_original_images_to_dir(
+            Some(export_id.clone()),
+            "project",
+            None,
+            Some("g-p-alpha123456".to_string()),
+            out_proj.path().to_path_buf(),
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(proj_res.scope_label, "Server Quiz");
+    assert_eq!(proj_res.exported_count, 3);
+    assert_eq!(proj_res.skipped_missing, 0);
+    let proj_dir = proj_res.destination_dir.as_ref().unwrap();
+    assert!(proj_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("Server_Quiz"));
+    assert_eq!(
+        std::fs::read(
+            proj_dir
+                .join("2024-03-09_Project_Diagram_Chat")
+                .join("arch-diagram.svg")
+        )
+        .unwrap(),
+        svg_bytes
+    );
+    assert_eq!(
+        std::fs::read(
+            proj_dir
+                .join("2024-03-09_Project_Diagram_Chat")
+                .join("photo-shot.jpg")
+        )
+        .unwrap(),
+        jpeg_bytes
+    );
+    assert_eq!(
+        std::fs::read(proj_dir.join("_Project Library").join("proj-lib.png")).unwrap(),
+        proj_lib_png
+    );
+    assert_no_empty_dirs(proj_dir);
+
+    // 3. Whole-export scope: organizes by General/, Projects/<alias>/, _Project Library/, and _Library/
+    let out_all = TempDir::new().unwrap();
+    let all_res = state
+        .export_original_images_to_dir(
+            Some(export_id),
+            "export",
+            None,
+            None,
+            out_all.path().to_path_buf(),
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(all_res.exported_count, 6);
+    assert_eq!(all_res.skipped_missing, 0);
+    let all_dir = all_res.destination_dir.as_ref().unwrap();
+    assert_eq!(
+        std::fs::read(
+            all_dir
+                .join("General")
+                .join("2024-03-09_Chat_Pics")
+                .join("image.png")
+        )
+        .unwrap(),
+        png_bytes_a
+    );
+    assert_eq!(
+        std::fs::read(
+            all_dir
+                .join("General")
+                .join("2024-03-09_Chat_Pics")
+                .join("image (2).png")
+        )
+        .unwrap(),
+        png_bytes_b
+    );
+    assert_eq!(
+        std::fs::read(
+            all_dir
+                .join("Projects")
+                .join("Server_Quiz")
+                .join("2024-03-09_Project_Diagram_Chat")
+                .join("arch-diagram.svg")
+        )
+        .unwrap(),
+        svg_bytes
+    );
+    assert_eq!(
+        std::fs::read(
+            all_dir
+                .join("Projects")
+                .join("Server_Quiz")
+                .join("2024-03-09_Project_Diagram_Chat")
+                .join("photo-shot.jpg")
+        )
+        .unwrap(),
+        jpeg_bytes
+    );
+    assert_eq!(
+        std::fs::read(
+            all_dir
+                .join("Projects")
+                .join("Server_Quiz")
+                .join("_Project Library")
+                .join("proj-lib.png")
+        )
+        .unwrap(),
+        proj_lib_png
+    );
+    assert_eq!(
+        std::fs::read(all_dir.join("_Library").join("standalone.png")).unwrap(),
+        lib_only_png
+    );
+    assert_eq!(collect_files_recursive(all_dir).len(), 6);
+    assert_no_empty_dirs(all_dir);
+
+    // 4. Folder open path validation: allows exported directory, rejects arbitrary directory
+    assert!(state
+        .resolve_exported_images_dir(&all_dir.to_string_lossy())
+        .is_ok());
+    let unrelated = TempDir::new().unwrap();
+    let err = state
+        .resolve_exported_images_dir(&unrelated.path().to_string_lossy())
+        .unwrap_err();
+    assert!(matches!(err, gpt_export_viewer_lib::errors::AppError::PathEscapesRoot));
+}
+
+#[test]
+fn commands_export_original_images_supports_multiple_projects_and_deduplicates() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("multi-proj-images-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    let bytes_a = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x11];
+    let bytes_b = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x22];
+    let bytes_shared = vec![0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x33];
+    let bytes_other = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x44];
+
+    fs::write(export_dir.join("file_p1.dat"), &bytes_a).unwrap();
+    fs::write(export_dir.join("file_p2.dat"), &bytes_b).unwrap();
+    fs::write(export_dir.join("file_shared.dat"), &bytes_shared).unwrap();
+    fs::write(export_dir.join("file_other.dat"), &bytes_other).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-p1",
+                "title": "Project 1 Chat",
+                "conversation_template_id": "g-p-alpha123456",
+                "create_time": 1710000000,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_p1", "content_type": "image_asset_pointer" },
+                                    { "asset_pointer": "file-service://file_shared", "content_type": "image_asset_pointer" }
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [
+                                    { "id": "file_p1", "name": "alpha.png", "mimeType": "image/png" },
+                                    { "id": "file_shared", "name": "shared.gif", "mimeType": "image/gif" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-p2",
+                "title": "Project 2 Chat",
+                "conversation_template_id": "g-p-beta789012",
+                "create_time": 1710000200,
+                "update_time": 1710000300,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m2",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_p2", "content_type": "image_asset_pointer" },
+                                    { "asset_pointer": "file-service://file_shared", "content_type": "image_asset_pointer" }
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [
+                                    { "id": "file_p2", "name": "beta.jpg", "mimeType": "image/jpeg" },
+                                    { "id": "file_shared", "name": "shared.gif", "mimeType": "image/gif" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-reg",
+                "title": "Regular Chat",
+                "create_time": 1710000400,
+                "update_time": 1710000500,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m3",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_other", "content_type": "image_asset_pointer" }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+    write_json(
+        &export_dir.join("library_files.json"),
+        &json!([
+            {
+                "file_id": "file_p1",
+                "file_name": "alpha.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "gizmo_id": "g-p-alpha123456",
+                "is_project": true,
+                "origination_thread_id": "conv-p1"
+            },
+            {
+                "file_id": "file_other",
+                "file_name": "other.png",
+                "mime_type": "image/png",
+                "library_file_category": "image",
+                "origination_thread_id": "conv-reg"
+            }
+        ]),
+    );
+
+    let state =
+        AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let out_dir = TempDir::new().unwrap();
+    let res = state
+        .export_original_images_to_dir_multi(
+            Some(export_id),
+            "project",
+            None,
+            Some(vec![
+                "g-p-alpha123456".to_string(),
+                "g-p-beta789012".to_string(),
+                "g-p-alpha123456".to_string(),
+            ]),
+            out_dir.path().to_path_buf(),
+            |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(res.scope, "project");
+    assert_eq!(res.scope_label, "2 projects");
+    assert_eq!(res.exported_count, 4);
+    assert_eq!(res.skipped_missing, 0);
+    let dest = res.destination_dir.as_ref().unwrap();
+    assert_eq!(
+        dest.file_name().unwrap().to_string_lossy(),
+        "2-projects-images"
+    );
+    let p1_sess = dest.join("Project_alpha1").join("2024-03-09_Project_1_Chat");
+    let p2_sess = dest.join("Project_beta78").join("2024-03-09_Project_2_Chat");
+    assert_eq!(std::fs::read(p1_sess.join("alpha.png")).unwrap(), bytes_a);
+    assert_eq!(
+        std::fs::read(p1_sess.join("shared.gif")).unwrap(),
+        bytes_shared
+    );
+    assert_eq!(std::fs::read(p2_sess.join("beta.jpg")).unwrap(), bytes_b);
+    assert_eq!(
+        std::fs::read(p2_sess.join("shared.gif")).unwrap(),
+        bytes_shared
+    );
+    assert!(!dest.join("other.png").exists());
+    assert_eq!(collect_files_recursive(dest).len(), 4);
+    assert_no_empty_dirs(dest);
+}
+
+#[test]
+fn commands_export_multi_sessions_separates_folders_handles_title_collisions_and_skips_empty() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("multi-sessions-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    let png_a = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x10];
+    let png_b = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x20];
+    fs::write(export_dir.join("file_s1.dat"), &png_a).unwrap();
+    fs::write(export_dir.join("file_s2.dat"), &png_b).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-same-1",
+                "title": "Same Title",
+                "create_time": 1710000100,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m1",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_s1", "content_type": "image_asset_pointer" }
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [{ "id": "file_s1", "name": "image.png", "mimeType": "image/png" }]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-same-2",
+                "title": "Same Title",
+                "create_time": 1710000100,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m2",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_s2", "content_type": "image_asset_pointer" }
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [{ "id": "file_s2", "name": "image.png", "mimeType": "image/png" }]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "id": "conv-missing-only",
+                "title": "Missing Only Session",
+                "create_time": 1710000100,
+                "update_time": 1710000100,
+                "mapping": {
+                    "n1": {
+                        "id": "n1",
+                        "parent": null,
+                        "message": {
+                            "id": "m3",
+                            "author": { "role": "user" },
+                            "content": {
+                                "content_type": "multimodal_text",
+                                "parts": [
+                                    { "asset_pointer": "file-service://file_missing", "content_type": "image_asset_pointer" }
+                                ]
+                            },
+                            "metadata": {
+                                "attachments": [{ "id": "file_missing", "name": "gone.png", "mimeType": "image/png" }]
+                            }
+                        }
+                    }
+                }
+            }
+        ]),
+    );
+
+    let state =
+        AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let out_dir = TempDir::new().unwrap();
+    let res = state
+        .export_original_images_to_dir(
+            Some(export_id),
+            "conversations",
+            Some(vec![
+                "conv-same-1".to_string(),
+                "conv-same-2".to_string(),
+                "conv-missing-only".to_string(),
+            ]),
+            None,
+            out_dir.path().to_path_buf(),
+            |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(res.scope_label, "3 sessions");
+    assert_eq!(res.exported_count, 2);
+    assert_eq!(res.skipped_missing, 1);
+    let dest = res.destination_dir.as_ref().unwrap();
+    assert_eq!(
+        dest.file_name().unwrap().to_string_lossy(),
+        "3-sessions-images"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("2024-03-09_Same_Title").join("image.png")).unwrap(),
+        png_a
+    );
+    assert_eq!(
+        std::fs::read(dest.join("2024-03-09_Same_Title (2)").join("image.png")).unwrap(),
+        png_b
+    );
+    assert!(!dest.join("2024-03-09_Missing_Only_Session").exists());
+    assert_eq!(std::fs::read_dir(dest).unwrap().count(), 2);
+    assert_no_empty_dirs(dest);
+}
+
+#[test]
+fn commands_save_sessions_organizes_by_general_project_alias_and_other() {
+    let root = TempDir::new().unwrap();
+    let app_data = TempDir::new().unwrap();
+    let export_dir = root.path().join("organized-sessions-export");
+    fs::create_dir_all(&export_dir).unwrap();
+
+    write_json(
+        &export_dir.join("conversations.json"),
+        &json!([
+            {
+                "id": "conv-reg",
+                "title": "Regular Chat",
+                "create_time": 1710000100,
+                "update_time": 1710000100,
+                "mapping": {}
+            },
+            {
+                "id": "conv-proj",
+                "title": "Project Chat",
+                "conversation_template_id": "g-p-alpha123456",
+                "create_time": 1710000200,
+                "update_time": 1710000200,
+                "mapping": {}
+            },
+            {
+                "id": "conv-gpt",
+                "title": "GPT Helper",
+                "gizmo_id": "g-custom999",
+                "gizmo_type": "gpt",
+                "create_time": 1710000300,
+                "update_time": 1710000300,
+                "mapping": {}
+            }
+        ]),
+    );
+
+    let state =
+        AppState::new_with_app_data(app_data.path(), Some(root.path().to_path_buf())).unwrap();
+    let export_id = state.get_exports_response().unwrap().exports[0].id.clone();
+
+    let mut aliases = std::collections::BTreeMap::new();
+    aliases.insert("g-p-alpha123456".to_string(), "Server Quiz".to_string());
+    state
+        .update_preferences_full_response(None, None, Some(aliases))
+        .unwrap();
+
+    let saved = state
+        .save_sessions_response(
+            Some(export_id),
+            vec![
+                "conv-reg".to_string(),
+                "conv-proj".to_string(),
+                "conv-gpt".to_string(),
+            ],
+            |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(saved.items.len(), 3);
+    assert!(saved.items[0].path.starts_with(saved.destination_dir.join("General")));
+    assert!(saved.items[1]
+        .path
+        .starts_with(saved.destination_dir.join("Projects").join("Server_Quiz")));
+    assert!(saved.items[2].path.starts_with(saved.destination_dir.join("Other")));
+    assert_no_empty_dirs(&saved.destination_dir);
+}
+
+fn collect_files_recursive(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(collect_files_recursive(&path));
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn assert_no_empty_dirs(dir: &Path) {
+    let entries: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        !entries.is_empty(),
+        "Directory must not be empty: {}",
+        dir.display()
+    );
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            assert_no_empty_dirs(&path);
+        }
+    }
+}
+
+fn strip_code_blocks_for_test(input: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in input.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            let mut in_tick = false;
+            for ch in line.chars() {
+                if ch == '`' {
+                    in_tick = !in_tick;
+                } else if !in_tick {
+                    out.push(ch);
+                }
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 struct Fixture {

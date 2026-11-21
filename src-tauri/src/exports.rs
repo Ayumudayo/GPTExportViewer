@@ -1,15 +1,19 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::Value;
 use sha1::{Digest, Sha1};
 
 use crate::errors::{io_error, AppResult};
-use crate::fs_guards::resolve_absolute;
+use crate::fs_guards::{resolve_absolute, resolve_inside};
 use crate::models::{ExportItem, ExportPaths};
 
 const CONVERSATIONS_FILE: &str = "conversations.json";
 const LIBRARY_FILES_FILE: &str = "library_files.json";
 const ASSET_NAMES_FILE: &str = "conversation_asset_file_names.json";
+const MANIFEST_FILE: &str = "export_manifest.json";
+const GROUP_CHATS_FILE: &str = "group_chats.json";
+const CODEX_FILE: &str = "codex.json";
 
 pub fn scan_exports(root_path: &Path) -> AppResult<Vec<ExportItem>> {
     let root = resolve_absolute(root_path);
@@ -26,14 +30,19 @@ pub fn scan_exports(root_path: &Path) -> AppResult<Vec<ExportItem>> {
             candidates.push(path);
         }
     }
-    if root.join(CONVERSATIONS_FILE).exists() {
+    if is_direct_export_dir(&root) {
         candidates.insert(0, root.clone());
     }
 
     let mut exports = Vec::new();
     for directory in candidates {
         let item = describe_export(&directory)?;
-        if item.has_conversations || item.has_library_files || item.has_asset_names {
+        if item.has_conversations
+            || item.has_library_files
+            || item.has_asset_names
+            || item.paths.group_chats.is_some()
+            || item.paths.codex.is_some()
+        {
             exports.push(item);
         }
     }
@@ -46,16 +55,92 @@ pub fn scan_exports(root_path: &Path) -> AppResult<Vec<ExportItem>> {
     Ok(exports)
 }
 
+fn is_direct_export_dir(root: &Path) -> bool {
+    !discover_conversation_files(root).is_empty()
+        || root.join(LIBRARY_FILES_FILE).is_file()
+        || root.join(ASSET_NAMES_FILE).is_file()
+        || root.join(GROUP_CHATS_FILE).is_file()
+        || root.join(CODEX_FILE).is_file()
+}
+
+pub fn discover_conversation_files(directory: &Path) -> Vec<PathBuf> {
+    let manifest_path = directory.join(MANIFEST_FILE);
+    if manifest_path.is_file() {
+        if let Ok(bytes) = std::fs::read(&manifest_path) {
+            if let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) {
+                if let Some(files) = manifest
+                    .pointer("/logical_files/conversations.json/files")
+                    .and_then(Value::as_array)
+                {
+                    let mut resolved = Vec::new();
+                    for entry in files.iter().filter_map(Value::as_str) {
+                        if let Ok(target) = resolve_inside(directory, entry) {
+                            if target.is_file() {
+                                resolved.push(target);
+                            }
+                        }
+                    }
+                    if !resolved.is_empty() {
+                        return resolved;
+                    }
+                }
+            }
+        }
+    }
+
+    let direct = directory.join(CONVERSATIONS_FILE);
+    if direct.is_file() {
+        return vec![direct];
+    }
+
+    let mut sharded: Vec<(usize, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(directory) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if let Some(shard_index) = parse_conversation_shard_index(file_name) {
+                sharded.push((shard_index, path));
+            }
+        }
+    }
+    sharded.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    sharded.into_iter().map(|(_, path)| path).collect()
+}
+
+fn parse_conversation_shard_index(file_name: &str) -> Option<usize> {
+    let lower = file_name.to_ascii_lowercase();
+    let stem = lower.strip_prefix("conversations-")?.strip_suffix(".json")?;
+    if stem.is_empty() || !stem.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    stem.parse::<usize>().ok()
+}
+
 pub fn describe_export(directory: &Path) -> AppResult<ExportItem> {
     let path = resolve_absolute(directory);
     let info = std::fs::metadata(&path).map_err(|error| io_error(&path, error))?;
+    let conversation_files = discover_conversation_files(&path);
+    let conversations = conversation_files
+        .first()
+        .cloned()
+        .unwrap_or_else(|| path.join(CONVERSATIONS_FILE));
+    let group_chats_path = path.join(GROUP_CHATS_FILE);
+    let codex_path = path.join(CODEX_FILE);
     let paths = ExportPaths {
         root: path.clone(),
-        conversations: path.join(CONVERSATIONS_FILE),
+        conversations,
         library_files: path.join(LIBRARY_FILES_FILE),
         asset_names: path.join(ASSET_NAMES_FILE),
+        conversation_files,
+        group_chats: group_chats_path.is_file().then_some(group_chats_path),
+        codex: codex_path.is_file().then_some(codex_path),
     };
-    let has_conversations = paths.conversations.exists();
+    let has_conversations = !paths.conversation_files.is_empty();
     let has_library_files = paths.library_files.exists();
     let has_asset_names = paths.asset_names.exists();
     let mut warnings = Vec::new();

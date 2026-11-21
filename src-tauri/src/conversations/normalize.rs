@@ -5,6 +5,8 @@ use serde_json::{Map, Value};
 use crate::models::{AssetRef, Conversation, ConversationMessage, MessagePart};
 use crate::time::to_iso_time;
 
+use super::text_cleanup::clean_message_text;
+
 pub fn normalize_conversation(conversation: &Value) -> crate::errors::AppResult<Conversation> {
     normalize_conversation_with_fallback(conversation, "")
 }
@@ -23,6 +25,7 @@ pub fn normalize_conversation_with_fallback(
             message
         })
         .collect();
+    let (kind, project_id, gizmo_id, memory_scope) = classify_conversation_origin(conversation);
     Ok(Conversation {
         id: get_conversation_id(conversation, fallback_id),
         title: conversation
@@ -55,10 +58,54 @@ pub fn normalize_conversation_with_fallback(
             .get("is_starred")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        kind,
+        project_id,
+        gizmo_id,
+        memory_scope,
         total_messages: messages.len(),
         messages,
         range: None,
     })
+}
+
+fn non_empty_trimmed_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+pub(crate) fn classify_conversation_origin(
+    conversation: &Value,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    let template_id = non_empty_trimmed_str(conversation.get("conversation_template_id"));
+    let raw_gizmo_id = non_empty_trimmed_str(conversation.get("gizmo_id"));
+    let effective_id = template_id.or(raw_gizmo_id);
+    let gizmo_type = non_empty_trimmed_str(conversation.get("gizmo_type"));
+    let memory_scope = non_empty_trimmed_str(conversation.get("memory_scope"));
+
+    let is_project = effective_id.is_some_and(|id| id.starts_with("g-p-"))
+        || gizmo_type == Some("snorlax")
+        || memory_scope.is_some_and(|scope| scope.starts_with("project"));
+
+    let (kind, project_id, gizmo_id) = if is_project {
+        (
+            "project",
+            effective_id.map(str::to_string),
+            effective_id.map(str::to_string),
+        )
+    } else if gizmo_type == Some("gpt") || effective_id.is_some_and(|id| id.starts_with("g-")) {
+        ("custom_gpt", None, effective_id.map(str::to_string))
+    } else {
+        ("regular", None, None)
+    };
+
+    (
+        kind.to_string(),
+        project_id,
+        gizmo_id,
+        memory_scope.map(str::to_string),
+    )
 }
 
 pub fn get_conversation_id(conversation: &Value, fallback: &str) -> String {
@@ -120,16 +167,33 @@ pub fn extract_message_parts_from_pair(content: &Value, metadata: &Value) -> Vec
     if let Some(parts) = content.get("parts").and_then(Value::as_array) {
         return parts
             .iter()
-            .filter_map(|part| part_to_message_part(part, &attachment_index))
+            .filter_map(|part| part_to_message_part(part, &attachment_index, metadata))
             .collect();
     }
 
-    let text = extract_message_text(content);
-    if text.is_empty() {
+    let raw_text = extract_message_text(content);
+    let cleaned = clean_message_text(&raw_text, metadata);
+    if cleaned.trim().is_empty() {
         Vec::new()
     } else {
-        vec![text_message_part(text)]
+        vec![text_message_part(cleaned)]
     }
+}
+
+fn derive_message_text(parts: &[MessagePart], content: &Value, metadata: &Value) -> String {
+    let text_from_parts: String = parts
+        .iter()
+        .filter(|part| part.part_type == "text")
+        .filter_map(|part| part.text.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !text_from_parts.is_empty() {
+        return text_from_parts;
+    }
+    let raw_text = extract_message_text(content);
+    clean_message_text(&raw_text, metadata).trim().to_string()
 }
 
 fn normalize_node(node: &NodeValue) -> Option<ConversationMessage> {
@@ -146,9 +210,14 @@ fn normalize_node(node: &NodeValue) -> Option<ConversationMessage> {
         .pointer("/content/content_type")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let text = extract_message_text(content);
+
+    if should_skip_before_cleaning(message, &role, content_type.as_deref()) {
+        return None;
+    }
+
     let asset_refs = extract_asset_refs_from_pair(content, metadata);
     let parts = extract_message_parts_from_pair(content, metadata);
+    let text = derive_message_text(&parts, content, metadata);
 
     if should_skip_message_node(
         message,
@@ -189,19 +258,22 @@ fn normalize_node(node: &NodeValue) -> Option<ConversationMessage> {
     })
 }
 
-fn should_skip_message_node(
+fn should_skip_before_cleaning(
     message: &Value,
     role: &str,
     content_type: Option<&str>,
-    text: &str,
-    parts: &[MessagePart],
-    asset_refs: &[AssetRef],
 ) -> bool {
     if message
         .pointer("/metadata/is_visually_hidden_from_conversation")
         .and_then(Value::as_bool)
         == Some(true)
     {
+        return true;
+    }
+    if matches!(content_type, Some("thoughts" | "reasoning_recap")) {
+        return true;
+    }
+    if role == "assistant" && content_type == Some("code") {
         return true;
     }
     if role == "system"
@@ -212,14 +284,35 @@ fn should_skip_message_node(
     {
         return true;
     }
-    if matches!(role, "system" | "tool")
-        && text.trim().is_empty()
-        && parts.is_empty()
-        && asset_refs.is_empty()
+    if message
+        .get("channel")
+        .and_then(Value::as_str)
+        .is_some_and(|channel| !channel.is_empty() && channel != "final")
+    {
+        return true;
+    }
+    if message
+        .get("recipient")
+        .and_then(Value::as_str)
+        .is_some_and(|recipient| !recipient.is_empty() && recipient != "all")
     {
         return true;
     }
     false
+}
+
+fn should_skip_message_node(
+    message: &Value,
+    role: &str,
+    content_type: Option<&str>,
+    text: &str,
+    parts: &[MessagePart],
+    asset_refs: &[AssetRef],
+) -> bool {
+    if should_skip_before_cleaning(message, role, content_type) {
+        return true;
+    }
+    text.trim().is_empty() && parts.is_empty() && asset_refs.is_empty()
 }
 
 #[derive(Clone)]
@@ -420,17 +513,19 @@ fn text_message_part(text: String) -> MessagePart {
         mime_type: None,
         width: None,
         height: None,
+        exists: None,
     }
 }
 
 fn part_to_message_part(
     part: &Value,
     attachment_index: &HashMap<String, AssetMetadata>,
+    metadata: &Value,
 ) -> Option<MessagePart> {
     if let Some(object) = part.as_object() {
         if is_asset_like_object(object) {
             if let Some(asset) = asset_ref_from_object(object, attachment_index) {
-                let metadata = attachment_index.get(&asset.file_id);
+                let asset_meta = attachment_index.get(&asset.file_id);
                 let mime_type = asset.mime_type.clone();
                 let part_type = if is_image_part(object, mime_type.as_deref()) {
                     "image"
@@ -444,16 +539,18 @@ fn part_to_message_part(
                     name: asset.name,
                     mime_type,
                     width: numeric_u32_field(object, &["width"])
-                        .or_else(|| metadata.and_then(|item| item.width)),
+                        .or_else(|| asset_meta.and_then(|item| item.width)),
                     height: numeric_u32_field(object, &["height"])
-                        .or_else(|| metadata.and_then(|item| item.height)),
+                        .or_else(|| asset_meta.and_then(|item| item.height)),
+                    exists: None,
                 });
             }
         }
     }
 
-    let text = part_to_text(part);
-    (!text.is_empty()).then(|| text_message_part(text))
+    let raw_text = part_to_text(part);
+    let cleaned = clean_message_text(&raw_text, metadata);
+    (!cleaned.trim().is_empty()).then(|| text_message_part(cleaned))
 }
 
 fn attachment_index(metadata: &Value) -> HashMap<String, AssetMetadata> {
@@ -584,8 +681,19 @@ fn numeric_u32_field(object: &Map<String, Value>, keys: &[&str]) -> Option<u32> 
 }
 
 fn normalize_file_id(value: &str) -> Option<String> {
-    if let Some(index) = value.find("file-").or_else(|| value.find("file_")) {
-        let tail = &value[index..];
+    let trimmed = value.trim();
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    if without_scheme.is_empty() {
+        return None;
+    }
+    if let Some(index) = without_scheme
+        .find("file-")
+        .or_else(|| without_scheme.find("file_"))
+    {
+        let tail = &without_scheme[index..];
         let id: String = tail
             .chars()
             .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
@@ -594,5 +702,263 @@ fn normalize_file_id(value: &str) -> Option<String> {
             return Some(id);
         }
     }
-    (!value.is_empty()).then(|| value.to_string())
+    Some(without_scheme.to_string())
+}
+
+pub fn normalize_group_chat(chat: &Value, fallback_id: &str) -> Conversation {
+    let id = chat
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_id)
+        .to_string();
+    let title = chat
+        .get("name")
+        .or_else(|| chat.get("title"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Group chat")
+        .to_string();
+    let created_at = to_iso_time(chat.get("created_at").unwrap_or(&Value::Null));
+    let updated_at = ["last_action_at", "updated_at", "created_at"]
+        .iter()
+        .find_map(|key| chat.get(*key).and_then(to_iso_time));
+
+    let raw_messages = chat
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let mut indexed_msgs: Vec<(usize, Option<String>, &Value)> = raw_messages
+        .iter()
+        .enumerate()
+        .map(|(orig_idx, msg)| {
+            let ts = to_iso_time(msg.get("created_at").unwrap_or(&Value::Null));
+            (orig_idx, ts, msg)
+        })
+        .collect();
+    indexed_msgs.sort_by(|left, right| match (&left.1, &right.1) {
+        (Some(lt), Some(rt)) => lt.cmp(rt).then_with(|| right.0.cmp(&left.0)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => right.0.cmp(&left.0),
+    });
+
+    let empty_meta = Value::Null;
+    let mut messages = Vec::new();
+    for (orig_idx, created, msg) in indexed_msgs {
+        let role = msg
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user")
+            .to_string();
+        let raw_text = msg
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let text = clean_message_text(raw_text, &empty_meta);
+        let asset_refs: Vec<AssetRef> = msg
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|att| {
+                        let obj = att.as_object()?;
+                        let file_id = ["target_id", "file_id", "id"]
+                            .iter()
+                            .find_map(|key| obj.get(*key).and_then(Value::as_str))
+                            .filter(|s| !s.is_empty())?
+                            .to_string();
+                        let name = ["title", "name", "file_name"]
+                            .iter()
+                            .find_map(|key| obj.get(*key).and_then(Value::as_str))
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                        let mime_type = ["mime_type", "mimeType"]
+                            .iter()
+                            .find_map(|key| obj.get(*key).and_then(Value::as_str))
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                        Some(AssetRef {
+                            file_id,
+                            name,
+                            mime_type,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if text.trim().is_empty() && asset_refs.is_empty() {
+            continue;
+        }
+        let msg_id = msg
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{id}-msg-{orig_idx}"));
+        let parts = if text.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![text_message_part(text.clone())]
+        };
+        messages.push(ConversationMessage {
+            id: msg_id.clone(),
+            node_id: msg_id,
+            ordinal: messages.len() + 1,
+            role: role.clone(),
+            author: role,
+            created_at: created,
+            content_type: Some("text".to_string()),
+            text,
+            asset_refs,
+            parts,
+        });
+    }
+
+    Conversation {
+        id,
+        title,
+        created_at,
+        updated_at,
+        model: Some("group-chat".to_string()),
+        archived: false,
+        starred: false,
+        kind: "group_chat".to_string(),
+        project_id: None,
+        gizmo_id: None,
+        memory_scope: None,
+        total_messages: messages.len(),
+        messages,
+        range: None,
+    }
+}
+
+pub fn normalize_codex_task(task: &Value, fallback_id: &str) -> Conversation {
+    let id = task
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_id)
+        .to_string();
+    let title = task
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Codex task")
+        .to_string();
+    let archived = task
+        .get("archived")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let turns = task
+        .get("turns")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let empty_meta = Value::Null;
+    let mut messages = Vec::new();
+    for (idx, turn) in turns.iter().enumerate() {
+        let role = turn
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("assistant")
+            .to_string();
+
+        let mut text_blocks = Vec::new();
+        if let Some(input_items) = turn.get("input_items").and_then(Value::as_array) {
+            for item in input_items {
+                let extracted = extract_codex_content_text(item.get("content"));
+                if !extracted.trim().is_empty() {
+                    text_blocks.push(extracted);
+                }
+            }
+        }
+        if let Some(output_items) = turn.get("output_items").and_then(Value::as_array) {
+            for item in output_items {
+                if item.get("type").and_then(Value::as_str) == Some("message") {
+                    let extracted = extract_codex_content_text(item.get("content"));
+                    if !extracted.trim().is_empty() {
+                        text_blocks.push(extracted);
+                    }
+                }
+            }
+            if text_blocks.is_empty() {
+                for item in output_items {
+                    if let Some(commit) = item
+                        .pointer("/output_diff/commit_message")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        text_blocks.push(commit.to_string());
+                    }
+                }
+            }
+        }
+
+        let joined = text_blocks.join("\n\n");
+        let text = clean_message_text(&joined, &empty_meta);
+        if text.trim().is_empty() {
+            continue;
+        }
+        let turn_id = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{id}-turn-{idx}"));
+        let parts = vec![text_message_part(text.clone())];
+        messages.push(ConversationMessage {
+            id: turn_id.clone(),
+            node_id: turn_id,
+            ordinal: messages.len() + 1,
+            role: role.clone(),
+            author: role,
+            created_at: None,
+            content_type: Some("text".to_string()),
+            text,
+            asset_refs: Vec::new(),
+            parts,
+        });
+    }
+
+    Conversation {
+        id,
+        title,
+        created_at: None,
+        updated_at: None,
+        model: Some("codex".to_string()),
+        archived,
+        starred: false,
+        kind: "codex".to_string(),
+        project_id: None,
+        gizmo_id: None,
+        memory_scope: None,
+        total_messages: messages.len(),
+        messages,
+        range: None,
+    }
+}
+
+fn extract_codex_content_text(content: Option<&Value>) -> String {
+    let Some(items) = content.and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for item in items {
+        if item.get("content_type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                out.push_str(text);
+            }
+        }
+    }
+    out
 }

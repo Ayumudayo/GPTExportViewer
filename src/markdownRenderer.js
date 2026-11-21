@@ -3,7 +3,7 @@ import { copyMessageText } from "./chatReaderHelpers.js";
 
 const h = React.createElement;
 const INLINE_TOKEN_PATTERN_SOURCE =
-  "(`[^`\\n]+`|\\*\\*[^*\\n]+?\\*\\*|~~[^~\\n]+?~~|\\[([^\\]\\n]+)\\]\\(([^)\\s]+)\\)|\\*[^*\\n]+?\\*|(?:^|(?<=[\\s(\\[\"']))_[^_\\n]+?_(?=$|[\\s)\\]\"'.,!?;:]))";
+  "(`[^`\\n]+`|\\*\\*[^*\\n]+?\\*\\*|~~[^~\\n]+?~~|!\\[([^\\]\\n]*)\\]\\(([^)\\s]+)\\)|\\[([^\\]\\n]+)\\]\\(([^)\\s]+)\\)|\\*[^*\\n]+?\\*|(?:^|(?<=[\\s(\\[\"']))_[^_\\n]+?_(?=$|[\\s)\\]\"'.,!?;:]))";
 
 function countTextOccurrences(text, lowerQuery) {
   if (!text || !lowerQuery) return 0;
@@ -71,6 +71,11 @@ function isSafeLinkHref(href) {
   return /^(https?:|mailto:)/i.test(trimmed);
 }
 
+function isBlockedMediaScheme(src) {
+  if (typeof src !== "string") return true;
+  return /^(?:javascript|data|vbscript):/i.test(src.trim());
+}
+
 function countInlineTokenMatches(text, lowerQuery) {
   if (!text || !lowerQuery) return 0;
   const source = String(text);
@@ -94,8 +99,13 @@ function countInlineTokenMatches(text, lowerQuery) {
     } else if ((full.startsWith("*") && full.endsWith("*")) || (full.startsWith("_") && full.endsWith("_"))) {
       count += countInlineTokenMatches(full.slice(1, -1), lowerQuery);
     } else if (match[2] !== undefined && match[3] !== undefined) {
-      const label = match[2];
-      const href = match[3];
+      const alt = match[2];
+      const src = match[3];
+      const label = isSafeLinkHref(src) ? (alt || "Image") : isBlockedMediaScheme(src) ? full : (alt || src);
+      count += countTextOccurrences(label, lowerQuery);
+    } else if (match[4] !== undefined && match[5] !== undefined) {
+      const label = match[4];
+      const href = match[5];
       count += countTextOccurrences(isSafeLinkHref(href) ? label : full, lowerQuery);
     } else {
       count += countTextOccurrences(full, lowerQuery);
@@ -151,8 +161,42 @@ function renderInlineTokens(text, highlightQuery, keyPrefix, matchState = null) 
     } else if ((full.startsWith("*") && full.endsWith("*")) || (full.startsWith("_") && full.endsWith("_"))) {
       nodes.push(h("em", { key: tokenKey }, renderInlineTokens(full.slice(1, -1), highlightQuery, tokenKey, matchState)));
     } else if (match[2] !== undefined && match[3] !== undefined) {
-      const label = match[2];
-      const href = match[3];
+      const alt = match[2];
+      const src = match[3];
+      if (isSafeLinkHref(src)) {
+        nodes.push(
+          h(
+            "a",
+            {
+              key: tokenKey,
+              className: "md-link md-image-link",
+              href: src,
+              target: "_blank",
+              rel: "noreferrer noopener"
+            },
+            renderHighlightedText(alt || "Image", highlightQuery, tokenKey, matchState)
+          )
+        );
+      } else if (isBlockedMediaScheme(src)) {
+        nodes.push(
+          h(
+            React.Fragment,
+            { key: tokenKey },
+            renderHighlightedText(full, highlightQuery, tokenKey, matchState)
+          )
+        );
+      } else {
+        nodes.push(
+          h(
+            "em",
+            { key: tokenKey, className: "md-image-placeholder" },
+            renderHighlightedText(alt || src, highlightQuery, tokenKey, matchState)
+          )
+        );
+      }
+    } else if (match[4] !== undefined && match[5] !== undefined) {
+      const label = match[4];
+      const href = match[5];
       if (isSafeLinkHref(href)) {
         nodes.push(
           h(

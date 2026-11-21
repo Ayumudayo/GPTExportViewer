@@ -1355,4 +1355,681 @@ function setInputValue(window, input, value) {
   }
 }
 
+// 7. Missing chat image placeholder, attachment-only user message, and sandbox markdown image
+{
+  const exportItem = {
+    id: "exp-missing-img",
+    name: "chatgpt-export-2026",
+    modifiedAt: "2026-11-18T16:29:11.000Z",
+    warnings: []
+  };
+
+  const mounted = await mountAppWithBackend(async (cmd) => {
+    if (cmd === "get_settings") {
+      return {
+        settings: {
+          sourceRoot: "E:\\Exports",
+          cacheDir: "C:\\cache",
+          exportCount: 1,
+          selectedExportId: "exp-missing-img",
+          windowSize: { width: 1280, height: 820 }
+        }
+      };
+    }
+    if (cmd === "get_exports") {
+      return { exports: [exportItem] };
+    }
+    if (cmd === "get_stats") {
+      return {
+        export: exportItem,
+        conversations: { totalConversations: 1, totalMessages: 3, totalAttachments: 2, archived: 0, starred: 0, maxMessages: 3 },
+        library: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 },
+        cache: { hit: true, dir: "C:\\cache\\exp-missing-img" }
+      };
+    }
+    if (cmd === "get_conversations") {
+      return {
+        export: exportItem,
+        items: [
+          {
+            id: "conv-modern",
+            title: "Modern export cases",
+            updatedAt: "2026-11-18T16:00:00.000Z",
+            createdAt: "2026-11-18T15:50:00.000Z",
+            model: "gpt-6-thinking",
+            messageCount: 3,
+            attachmentCount: 2,
+            archived: false,
+            starred: false
+          }
+        ],
+        page: { cursor: 0, limit: 80, total: 1, nextCursor: null },
+        stats: { totalConversations: 1, totalMessages: 3 }
+      };
+    }
+    if (cmd === "get_conversation") {
+      return {
+        id: "conv-modern",
+        title: "Modern export cases",
+        createdAt: "2026-11-18T15:50:00.000Z",
+        updatedAt: "2026-11-18T16:00:00.000Z",
+        model: "gpt-6-thinking",
+        archived: false,
+        starred: false,
+        totalMessages: 3,
+        messages: [
+          {
+            id: "m-att-only",
+            role: "user",
+            createdAt: "2026-11-18T15:51:00.000Z",
+            text: "",
+            parts: [],
+            assetRefs: [{ fileId: "file-att-1", name: "handoff.md", mimeType: "text/markdown" }]
+          },
+          {
+            id: "m-missing-img",
+            role: "user",
+            createdAt: "2026-11-18T15:52:00.000Z",
+            text: "Check this photo",
+            parts: [
+              { partType: "image", fileId: "file-gone", name: "gone.png", mimeType: "image/png", width: 800, height: 600, exists: false },
+              { partType: "text", text: "Check this photo" }
+            ],
+            assetRefs: [{ fileId: "file-gone", name: "gone.png", mimeType: "image/png" }]
+          },
+          {
+            id: "m-sandbox",
+            role: "assistant",
+            createdAt: "2026-11-18T15:53:00.000Z",
+            text: "Here is ![Diagram alt](sandbox:/mnt/data/out.png)",
+            parts: [{ partType: "text", text: "Here is ![Diagram alt](sandbox:/mnt/data/out.png)" }],
+            assetRefs: []
+          }
+        ],
+        range: { start: 0, limit: 120, total: 3, nextStart: null }
+      };
+    }
+    if (cmd === "get_library") {
+      return {
+        export: exportItem,
+        items: [],
+        page: { cursor: 0, limit: 120, total: 0, nextCursor: null },
+        stats: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 }
+      };
+    }
+    return {};
+  });
+
+  try {
+    assert.equal(mounted.pageErrors.length, 0, "Modern export mount should not produce uncaught errors");
+    const readerWindow = mounted.host.querySelector(".message-window");
+    assert.ok(readerWindow, "Message window should mount");
+    assert.equal(readerWindow.textContent.includes("(empty message)"), false, "Attachment-only user message should not display (empty message)");
+    assert.match(readerWindow.textContent, /handoff\.md/, "Attachment-only user message should display attachment chip");
+
+    const missingTile = readerWindow.querySelector('.chat-image-missing[data-file-id="file-gone"]');
+    assert.ok(missingTile, "Missing chat image part should render missing placeholder tile");
+    assert.equal(missingTile.querySelector("img"), null, "Missing chat image placeholder must not render broken img element");
+    assert.match(missingTile.textContent, /Image file not included in export/, "Missing chat image should show descriptive label");
+    assert.match(missingTile.textContent, /gone\.png/, "Missing chat image should show file name");
+
+    assert.equal(readerWindow.textContent.includes("sandbox:/mnt/data/out.png"), false, "Sandbox markdown image should not leak raw URI");
+    assert.match(readerWindow.textContent, /Diagram alt/, "Sandbox markdown image should render its alt label");
+  } finally {
+    await mounted.cleanup();
+  }
+}
+
+{
+  // 8. Regular vs Project conversation scope filters, project chips, badges, and inline project renaming
+  const exportItem = {
+    id: "exp-projects",
+    name: "chatgpt-export-projects",
+    modifiedAt: "2026-11-18T16:29:11.000Z",
+    warnings: []
+  };
+  let aliasesState = {};
+  const allItems = [
+    {
+      id: "conv-reg",
+      title: "Regular Chat",
+      updatedAt: "2026-11-18T16:00:00.000Z",
+      createdAt: "2026-11-18T15:00:00.000Z",
+      model: "gpt-5",
+      messageCount: 2,
+      attachmentCount: 0,
+      archived: false,
+      starred: false,
+      kind: "regular",
+      preview: "Plain chat"
+    },
+    {
+      id: "conv-proj-1",
+      title: "Quiz Alpha",
+      updatedAt: "2026-11-18T15:30:00.000Z",
+      createdAt: "2026-11-18T14:30:00.000Z",
+      model: "gpt-5",
+      messageCount: 2,
+      attachmentCount: 0,
+      archived: false,
+      starred: false,
+      kind: "project",
+      projectId: "g-p-alpha123456",
+      gizmoId: "g-p-alpha123456",
+      preview: "Project one chat"
+    },
+    {
+      id: "conv-proj-2",
+      title: "Design Notes",
+      updatedAt: "2026-11-18T15:00:00.000Z",
+      createdAt: "2026-11-18T14:00:00.000Z",
+      model: "gpt-5",
+      messageCount: 2,
+      attachmentCount: 0,
+      archived: false,
+      starred: false,
+      kind: "project",
+      projectId: "g-p-beta789012",
+      gizmoId: "g-p-beta789012",
+      preview: "Project two chat"
+    },
+    {
+      id: "conv-grp-1",
+      title: "Dot Group",
+      updatedAt: "2026-11-18T14:00:00.000Z",
+      createdAt: "2026-11-18T13:00:00.000Z",
+      model: "group-chat",
+      messageCount: 2,
+      attachmentCount: 0,
+      archived: false,
+      starred: false,
+      kind: "group_chat",
+      preview: "Group discussion"
+    }
+  ];
+
+  const makeSettings = () => ({
+    sourceRoot: "E:\\Exports",
+    cacheDir: "C:\\cache",
+    exportCount: 1,
+    selectedExportId: "exp-projects",
+    windowSize: { width: 1280, height: 820 },
+    projectAliases: { ...aliasesState }
+  });
+
+  const mounted = await mountAppWithBackend(async (cmd, args) => {
+    if (cmd === "get_settings") {
+      return { settings: makeSettings() };
+    }
+    if (cmd === "update_preferences") {
+      if (args.projectAliases) {
+        aliasesState = { ...aliasesState, ...args.projectAliases };
+      }
+      return { settings: makeSettings() };
+    }
+    if (cmd === "get_exports") {
+      return { exports: [exportItem] };
+    }
+    if (cmd === "get_stats") {
+      return {
+        export: exportItem,
+        conversations: {
+          totalConversations: 4,
+          totalMessages: 8,
+          totalAttachments: 0,
+          archived: 0,
+          starred: 0,
+          maxMessages: 2,
+          regularConversations: 1,
+          projectConversations: 2,
+          customGptConversations: 0,
+          groupChatConversations: 1,
+          codexConversations: 0,
+          projects: [
+            {
+              id: "g-p-alpha123456",
+              conversationCount: 1,
+              archivedCount: 0,
+              latestUpdatedAt: "2026-11-18T15:30:00.000Z",
+              sampleTitle: "Quiz Alpha",
+              fileCount: 3
+            },
+            {
+              id: "g-p-beta789012",
+              conversationCount: 1,
+              archivedCount: 0,
+              latestUpdatedAt: "2026-11-18T15:00:00.000Z",
+              sampleTitle: "Design Notes",
+              fileCount: 0
+            }
+          ]
+        },
+        library: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 },
+        cache: { hit: true, dir: "C:\\cache\\exp-projects" }
+      };
+    }
+    if (cmd === "get_conversations") {
+      const requestedProjectIds = Array.isArray(args.projectIds) && args.projectIds.length > 0
+        ? args.projectIds
+        : args.projectId
+          ? [args.projectId]
+          : [];
+      const filtered = allItems
+        .filter((item) => {
+          if (args.scope === "regular") return item.kind === "regular";
+          if (args.scope === "project") return item.kind === "project";
+          if (args.scope === "other") return item.kind === "group_chat";
+          return true;
+        })
+        .filter((item) => (requestedProjectIds.length === 0 ? true : requestedProjectIds.includes(item.projectId)));
+      return {
+        export: exportItem,
+        items: filtered,
+        page: { cursor: 0, limit: 80, total: filtered.length, nextCursor: null },
+        stats: { totalConversations: 4, totalMessages: 8 }
+      };
+    }
+    if (cmd === "get_conversation") {
+      const found = allItems.find((item) => item.id === args.conversationId) ?? allItems[0];
+      return {
+        ...found,
+        totalMessages: 1,
+        messages: [
+          {
+            id: `${found.id}-m1`,
+            role: "user",
+            createdAt: found.createdAt,
+            text: found.preview,
+            parts: [{ partType: "text", text: found.preview }],
+            assetRefs: []
+          }
+        ],
+        range: { start: 0, limit: 120, total: 1, nextStart: null }
+      };
+    }
+    if (cmd === "get_library") {
+      return {
+        export: exportItem,
+        items: [],
+        page: { cursor: 0, limit: 120, total: 0, nextCursor: null },
+        stats: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 }
+      };
+    }
+    return {};
+  });
+
+  try {
+    assert.equal(mounted.pageErrors.length, 0);
+    // Sidebar renders project badge alongside regular row without badge
+    const rowBadges = Array.from(mounted.host.querySelectorAll(".row-kind-badge")).map((el) => el.textContent);
+    assert.ok(rowBadges.includes("Project alpha1"), "Sidebar row should display project badge");
+    assert.ok(rowBadges.includes("Group"), "Sidebar row should display group chat badge");
+
+    // Click "General" scope filter
+    const generalScopeBtn = Array.from(mounted.host.querySelectorAll(".chat-scope-filter button")).find((b) =>
+      b.textContent.includes("General")
+    );
+    assert.ok(generalScopeBtn, "General scope filter button should render");
+    await mounted.act(async () => {
+      generalScopeBtn.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some((c) => c.cmd === "get_conversations" && c.args.scope === "regular"),
+      "Clicking General should query backend with scope=regular"
+    );
+
+    // Click "Projects" scope filter
+    const projectsScopeBtn = Array.from(mounted.host.querySelectorAll(".chat-scope-filter button")).find((b) =>
+      b.textContent.includes("Projects")
+    );
+    await mounted.act(async () => {
+      projectsScopeBtn.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some((c) => c.cmd === "get_conversations" && c.args.scope === "project"),
+      "Clicking Projects should query backend with scope=project"
+    );
+
+    // Project group chips appear and selecting one passes projectId
+    const alphaChip = Array.from(mounted.host.querySelectorAll(".project-chip")).find((b) =>
+      b.textContent.includes("Project alpha1")
+    );
+    assert.ok(alphaChip, "Project alpha1 group chip should render under Projects filter");
+    await mounted.act(async () => {
+      alphaChip.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some((c) => c.cmd === "get_conversations" && c.args.projectId === "g-p-alpha123456"),
+      "Selecting a project chip should filter get_conversations by projectId"
+    );
+    assert.match(mounted.host.querySelector(".reader-kind-pill.project")?.textContent ?? "", /Project alpha1/);
+
+    // Rename Project alpha1 inline via Sidebar pencil button
+    const renameBtn = mounted.host.querySelector('button[aria-label="Rename Project alpha1"]');
+    assert.ok(renameBtn, "Project chip should expose inline rename button");
+    await mounted.act(async () => {
+      renameBtn.click();
+    });
+    const renameInput = mounted.host.querySelector('.project-rename-form input');
+    assert.ok(renameInput, "Inline project rename input should open");
+    await mounted.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(mounted.window.HTMLInputElement.prototype, "value").set;
+      setter.call(renameInput, "Server Quiz");
+      renameInput.dispatchEvent(new mounted.window.Event("input", { bubbles: true }));
+    });
+    await mounted.act(async () => {
+      mounted.host.querySelector('.project-rename-form button[type="submit"]').click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some(
+        (c) => c.cmd === "update_preferences" && c.args.projectAliases?.["g-p-alpha123456"] === "Server Quiz"
+      ),
+      "Submitting inline project rename should persist projectAliases"
+    );
+    assert.equal(mounted.host.querySelector(".reader-kind-pill.project")?.textContent, "Server Quiz");
+    assert.match(mounted.host.querySelector(".inspector")?.textContent ?? "", /Server Quiz/);
+
+    // Trigger session images export from ChatReader toolbar
+    const chatImgBtn = mounted.host.querySelector('button[aria-label="Export session images"]');
+    assert.ok(chatImgBtn, "ChatReader should expose Export session images button");
+    await mounted.act(async () => {
+      chatImgBtn.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some(
+        (c) =>
+          c.cmd === "export_original_images" &&
+          c.args.scope === "conversations" &&
+          Array.isArray(c.args.conversationIds) &&
+          c.args.conversationIds.includes("conv-proj-1")
+      ),
+      "ChatReader image export button should invoke export_original_images for active conversation"
+    );
+
+    // Trigger project images export from Sidebar project chip action
+    const projImgBtn = mounted.host.querySelector('button[aria-label="Export images from Server Quiz"]');
+    assert.ok(projImgBtn, "Project chip row should expose Export images button");
+    await mounted.act(async () => {
+      projImgBtn.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some(
+        (c) =>
+          c.cmd === "export_original_images" &&
+          c.args.scope === "project" &&
+          c.args.projectId === "g-p-alpha123456"
+      ),
+      "Project image export button should invoke export_original_images for selected project"
+    );
+
+    // Toggle a second project chip -> multi-select filters both projects and exports their union
+    assert.match(mounted.host.querySelector(".project-selection-count")?.textContent ?? "", /1 selected/);
+    const betaChip = Array.from(mounted.host.querySelectorAll(".project-chip")).find((b) =>
+      b.textContent.includes("Project beta78")
+    );
+    assert.ok(betaChip, "Project beta78 group chip should render");
+    await mounted.act(async () => {
+      betaChip.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some(
+        (c) =>
+          c.cmd === "get_conversations" &&
+          Array.isArray(c.args.projectIds) &&
+          c.args.projectIds.length === 2 &&
+          c.args.projectIds.includes("g-p-alpha123456") &&
+          c.args.projectIds.includes("g-p-beta789012")
+      ),
+      "Toggling a second project chip should query get_conversations with both projectIds"
+    );
+    assert.match(mounted.host.querySelector(".project-selection-count")?.textContent ?? "", /2 selected/);
+    const rowTitles = Array.from(mounted.host.querySelectorAll(".conversation-row strong")).map((el) => el.textContent);
+    assert.deepEqual(rowTitles, ["Quiz Alpha", "Design Notes"]);
+
+    const batchProjExportBtn = mounted.host.querySelector('button[aria-label="Export images from selected projects"]');
+    assert.ok(batchProjExportBtn, "Project selection bar should expose multi-project image export button");
+    await mounted.act(async () => {
+      batchProjExportBtn.click();
+    });
+    await mounted.flush();
+    assert.ok(
+      mounted.invokeCalls.some(
+        (c) =>
+          c.cmd === "export_original_images" &&
+          c.args.scope === "project" &&
+          Array.isArray(c.args.projectIds) &&
+          c.args.projectIds.includes("g-p-alpha123456") &&
+          c.args.projectIds.includes("g-p-beta789012")
+      ),
+      "Multi-project export button should invoke export_original_images with all selected projectIds"
+    );
+
+    const clearProjectsBtn = mounted.host.querySelector('button[aria-label="Clear selected projects"]');
+    assert.ok(clearProjectsBtn, "Project selection bar should expose Clear selected projects button");
+    await mounted.act(async () => {
+      clearProjectsBtn.click();
+    });
+    await mounted.flush();
+    assert.equal(mounted.host.querySelector(".project-selection-bar"), null);
+  } finally {
+    await mounted.cleanup();
+  }
+}
+
+{
+  // Test: Floating scroll-to-bottom button visibility, jump-to-bottom settling, multi-page load, and stall loop guard.
+  const exportItem = {
+    id: "exp-scroll",
+    name: "scroll-export",
+    path: "E:\\Exports\\scroll-export",
+    modifiedAt: "2026-11-18T16:00:00.000Z"
+  };
+  let conversationCalls = 0;
+  let stallMode = false;
+  const makeMsg = (index) => ({
+    id: `msg-${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    createdAt: "2026-11-18T16:00:00.000Z",
+    text: `Message body ${index}`,
+    parts: [{ partType: "text", text: `Message body ${index}` }],
+    assetRefs: []
+  });
+
+  const mounted = await mountAppWithBackend(async (cmd, args) => {
+    if (cmd === "get_settings") {
+      return {
+        settings: {
+          sourceRoot: "E:\\Exports",
+          cacheDir: "C:\\cache",
+          exportCount: 1,
+          selectedExportId: "exp-scroll",
+          windowSize: { width: 1280, height: 820 }
+        }
+      };
+    }
+    if (cmd === "get_exports") return { exports: [exportItem] };
+    if (cmd === "get_stats") {
+      return {
+        export: exportItem,
+        conversations: { totalConversations: 2, totalMessages: 2, totalAttachments: 0, archived: 0, starred: 0, maxMessages: 2 },
+        library: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 },
+        cache: { hit: true, dir: "C:\\cache\\exp-scroll" }
+      };
+    }
+    if (cmd === "get_conversations") {
+      return {
+        export: exportItem,
+        items: [
+          {
+            id: "conv-single",
+            title: "Single page chat",
+            createdAt: "2026-11-18T16:00:00.000Z",
+            updatedAt: "2026-11-18T16:00:00.000Z",
+            model: "gpt-5",
+            messageCount: 2,
+            attachmentCount: 0,
+            archived: false,
+            starred: false,
+            kind: "regular",
+            preview: "Message body 0"
+          },
+          {
+            id: "conv-paged",
+            title: "Multi page chat",
+            createdAt: "2026-11-18T15:00:00.000Z",
+            updatedAt: "2026-11-18T15:00:00.000Z",
+            model: "gpt-5",
+            messageCount: 2,
+            attachmentCount: 0,
+            archived: false,
+            starred: false,
+            kind: "regular",
+            preview: "Message body 0"
+          }
+        ],
+        page: { cursor: 0, limit: 80, total: 2, nextCursor: null },
+        stats: { totalConversations: 2, totalMessages: 4 }
+      };
+    }
+    if (cmd === "get_conversation") {
+      if (args.conversationId === "conv-single") {
+        return {
+          id: "conv-single",
+          title: "Single page chat",
+          totalMessages: 2,
+          messages: [makeMsg(0), makeMsg(1)],
+          range: { start: 0, limit: 120, total: 2, nextStart: null }
+        };
+      }
+      conversationCalls += 1;
+      if (args.start === 0) {
+        return {
+          id: "conv-paged",
+          title: "Multi page chat",
+          totalMessages: 2,
+          messages: [makeMsg(0)],
+          range: { start: 0, limit: 1, total: 2, nextStart: 1 }
+        };
+      }
+      if (stallMode) {
+        return {
+          id: "conv-paged",
+          title: "Multi page chat",
+          totalMessages: 2,
+          messages: [],
+          range: { start: 0, limit: 1, total: 2, nextStart: 1 }
+        };
+      }
+      return {
+        id: "conv-paged",
+        title: "Multi page chat",
+        totalMessages: 2,
+        messages: [makeMsg(1)],
+        range: { start: 1, limit: 1, total: 2, nextStart: null }
+      };
+    }
+    if (cmd === "get_library") {
+      return {
+        export: exportItem,
+        items: [],
+        page: { cursor: 0, limit: 120, total: 0, nextCursor: null },
+        stats: { totalImages: 0, linkedImages: 0, libraryOnlyImages: 0, missingFiles: 0 }
+      };
+    }
+    return {};
+  }, {
+    intersectionObserver: class PassiveIntersectionObserver {
+      observe() {}
+      disconnect() {}
+    }
+  });
+
+  try {
+    const messageWindow = mounted.host.querySelector(".message-window");
+    assert.ok(messageWindow, "ChatReader message window should mount");
+    Object.defineProperty(messageWindow, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(messageWindow, "clientHeight", { value: 400, configurable: true });
+    messageWindow.scrollTop = 800;
+    await mounted.act(async () => {
+      messageWindow.dispatchEvent(new mounted.window.Event("scroll"));
+    });
+    await mounted.flush();
+    assert.equal(mounted.host.querySelector(".scroll-to-bottom-btn"), null, "Button should stay hidden at bottom");
+
+    // Scrolling slightly up should reveal the scroll-to-bottom button
+    messageWindow.scrollTop = 760;
+    await mounted.act(async () => {
+      messageWindow.dispatchEvent(new mounted.window.Event("scroll"));
+    });
+    await mounted.flush();
+    const scrollBtn = mounted.host.querySelector(".scroll-to-bottom-btn");
+    assert.ok(scrollBtn, "Scrolling up slightly should display .scroll-to-bottom-btn");
+
+    // Clicking should jump to bottom (800) and hide button after settle
+    await mounted.act(async () => {
+      scrollBtn.click();
+    });
+    await mounted.flush();
+    await mounted.flush();
+    assert.equal(messageWindow.scrollTop, 800);
+    assert.equal(mounted.host.querySelector(".scroll-to-bottom-btn"), null, "Button should hide after settling at bottom");
+
+    // Switch to paginated conversation -> button appears and loads page 2 then jumps to bottom
+    const pagedRow = Array.from(mounted.host.querySelectorAll(".conversation-row")).find((el) =>
+      el.textContent.includes("Multi page chat")
+    );
+    await mounted.act(async () => {
+      pagedRow.click();
+    });
+    await mounted.flush();
+    Object.defineProperty(messageWindow, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(messageWindow, "clientHeight", { value: 400, configurable: true });
+    messageWindow.scrollTop = 100;
+    const pagedScrollBtn = mounted.host.querySelector(".scroll-to-bottom-btn");
+    assert.ok(pagedScrollBtn, "Paginated session with remaining pages should display .scroll-to-bottom-btn");
+
+    await mounted.act(async () => {
+      pagedScrollBtn.click();
+    });
+    await mounted.flush();
+    await mounted.flush();
+    assert.equal(messageWindow.scrollTop, 800);
+    assert.match(mounted.host.querySelector(".message-window")?.textContent ?? "", /Message body 1/);
+    assert.equal(mounted.host.querySelector(".scroll-to-bottom-btn"), null, "Button should hide once all pages load and bottom settles");
+
+    // Stall loop guard: if a completed page load does not advance nextStart or messages, stop instead of looping
+    stallMode = true;
+    conversationCalls = 0;
+    const singleRow = Array.from(mounted.host.querySelectorAll(".conversation-row")).find((el) =>
+      el.textContent.includes("Single page chat")
+    );
+    await mounted.act(async () => {
+      singleRow.click();
+    });
+    await mounted.flush();
+    await mounted.act(async () => {
+      pagedRow.click();
+    });
+    await mounted.flush();
+    const callsBeforeClick = conversationCalls;
+    const stallBtn = mounted.host.querySelector(".scroll-to-bottom-btn");
+    assert.ok(stallBtn);
+    await mounted.act(async () => {
+      stallBtn.click();
+    });
+    await mounted.flush();
+    await mounted.flush();
+    assert.equal(conversationCalls - callsBeforeClick, 1, "Stalled pagination must stop after 1 non-advancing load");
+  } finally {
+    await mounted.cleanup();
+  }
+}
+
 console.log("app mount tests passed");

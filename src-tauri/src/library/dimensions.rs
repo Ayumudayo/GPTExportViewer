@@ -24,7 +24,96 @@ fn image_dimensions_from_bytes(bytes: &[u8], mime: &str) -> Option<(u32, u32)> {
     if mime == "image/webp" || bytes.get(0..4) == Some(b"RIFF") {
         return webp_dimensions(bytes);
     }
+    if mime == "image/svg+xml" || looks_like_svg(bytes) {
+        return svg_dimensions(bytes);
+    }
     None
+}
+
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let prefix_len = bytes.len().min(256);
+    let lower = String::from_utf8_lossy(&bytes[..prefix_len])
+        .trim_start_matches('\u{FEFF}')
+        .trim_start()
+        .to_ascii_lowercase();
+    lower.starts_with("<svg") || (lower.starts_with("<?xml") && lower.contains("<svg"))
+}
+
+fn svg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let text = String::from_utf8_lossy(bytes);
+    let lower = text.to_ascii_lowercase();
+    let svg_start = lower.find("<svg")?;
+    let tag_rest = &text[svg_start..];
+    let tag_end = tag_rest.find('>')?;
+    let tag_slice = &tag_rest[..tag_end];
+
+    let width = extract_svg_attr(tag_slice, "width").and_then(parse_svg_length);
+    let height = extract_svg_attr(tag_slice, "height").and_then(parse_svg_length);
+    if let (Some(w), Some(h)) = (width, height) {
+        return nonzero_dimensions(w, h);
+    }
+
+    if let Some(view_box) = extract_svg_attr(tag_slice, "viewBox")
+        .or_else(|| extract_svg_attr(tag_slice, "viewbox"))
+    {
+        let nums: Vec<f64> = view_box
+            .split(|ch: char| ch.is_whitespace() || ch == ',')
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse::<f64>().ok())
+            .collect();
+        if nums.len() >= 4 && nums[2].is_finite() && nums[3].is_finite() {
+            let w = nums[2].round();
+            let h = nums[3].round();
+            if w > 0.0 && h > 0.0 && w <= u32::MAX as f64 && h <= u32::MAX as f64 {
+                return nonzero_dimensions(w as u32, h as u32);
+            }
+        }
+    }
+    None
+}
+
+fn extract_svg_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let lower = tag.to_ascii_lowercase();
+    let needle = name.to_ascii_lowercase();
+    let mut search_from = 0usize;
+    while let Some(rel) = lower[search_from..].find(&needle) {
+        let pos = search_from + rel;
+        let prev_ok = pos == 0
+            || tag[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_whitespace());
+        let after = &tag[pos + needle.len()..];
+        let trimmed_eq = after.trim_start();
+        if prev_ok && trimmed_eq.starts_with('=') {
+            let val_rest = trimmed_eq[1..].trim_start();
+            let quote = val_rest.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                let inner = &val_rest[1..];
+                let end = inner.find(quote)?;
+                return Some(&inner[..end]);
+            }
+        }
+        search_from = pos + needle.len();
+    }
+    None
+}
+
+fn parse_svg_length(raw: &str) -> Option<u32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.ends_with('%') {
+        return None;
+    }
+    let numeric = trimmed
+        .strip_suffix("px")
+        .unwrap_or(trimmed)
+        .trim();
+    let val = numeric.parse::<f64>().ok()?;
+    if !val.is_finite() || val <= 0.0 || val > u32::MAX as f64 {
+        return None;
+    }
+    let rounded = val.round() as u32;
+    (rounded > 0).then_some(rounded)
 }
 
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {

@@ -17,6 +17,10 @@
   --green-soft: rgba(16, 163, 127, 0.14);
   --amber: #f59e0b;
   --amber-soft: rgba(245, 158, 11, 0.14);
+  --project-accent: #60a5fa;
+  --project-text: #bfdbfe;
+  --project-soft: rgba(59, 130, 246, 0.14);
+  --project-border: rgba(96, 165, 250, 0.34);
   --code-bg: #0d1117;
   --pre-text: #d6dee8;
   --button-hover: rgba(255, 255, 255, 0.06);
@@ -73,6 +77,10 @@
   --green-soft: rgba(13, 138, 106, 0.11);
   --amber: #d97706;
   --amber-soft: rgba(217, 119, 6, 0.11);
+  --project-accent: #2563eb;
+  --project-text: #1d4ed8;
+  --project-soft: rgba(37, 99, 235, 0.1);
+  --project-border: rgba(37, 99, 235, 0.28);
   --code-bg: #f6f8fa;
   --pre-text: #1e293b;
   --button-hover: rgba(15, 23, 42, 0.05);

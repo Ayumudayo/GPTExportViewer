@@ -75,7 +75,9 @@ pub fn run() {
             commands::refresh_index,
             commands::save_sessions,
             commands::open_saved_sessions_folder,
-            commands::save_original_image
+            commands::save_original_image,
+            commands::export_original_images,
+            commands::open_exported_images_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTExportViewer");

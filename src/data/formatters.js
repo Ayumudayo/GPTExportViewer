@@ -66,6 +66,15 @@ export function truncate(value, length = 180) {
   return text.length > length ? `${text.slice(0, length - 1)}...` : text;
 }
 
+export function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const idx = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const scaled = value / 1024 ** idx;
+  return `${idx === 0 ? Math.round(scaled) : scaled.toFixed(scaled >= 100 ? 0 : 1)} ${units[idx]}`;
+}
+
 function formatIsoLike(value) {
   const date = parseDate(value);
   if (!date) return "Unknown export";

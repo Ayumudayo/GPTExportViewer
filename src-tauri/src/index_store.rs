@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use crate::cache::{
     export_fingerprint, read_json, write_json_compact_atomic, ExportFingerprint,
 };
-use crate::conversations::summary_index::build_conversation_artifacts;
+use crate::conversations::summary_index::build_conversation_artifacts_with_context;
 use crate::errors::AppResult;
-use crate::library::index::build_library_index;
+use crate::library::index::{build_library_index_with_context, preload_library_context};
 use crate::models::{CacheStatus, Conversation, ConversationIndex, ExportItem, LibraryIndex};
 use crate::search::{build_conversation_search_list, build_library_lookup};
 
-pub(crate) const CACHE_META_VERSION: u8 = 4;
+pub(crate) const CACHE_META_VERSION: u8 = 7;
 pub(crate) const CONVERSATION_LRU_CAPACITY: usize = 16;
 
 #[derive(Debug, Default)]
@@ -139,14 +139,14 @@ pub(crate) fn index_export(
         }
     }
 
-    let artifacts = build_conversation_artifacts(export, &jsonl_path)?;
-    let conversation_ids: HashSet<_> = artifacts
-        .index
-        .items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    let library_index = build_library_index(export, &conversation_ids)?;
+    let preloaded = preload_library_context(export)?;
+    let artifacts = build_conversation_artifacts_with_context(export, &jsonl_path, &preloaded)?;
+    let library_index = build_library_index_with_context(
+        export,
+        &preloaded,
+        &artifacts.conversation_titles,
+        &artifacts.conversation_assets,
+    )?;
     let (library_by_file_id, library_search_texts) = build_library_lookup(&library_index.items);
     let conversation_search_list =
         build_conversation_search_list(&artifacts.index.items, &artifacts.search_texts);
@@ -199,6 +199,10 @@ mod tests {
             model: None,
             archived: false,
             starred: false,
+            kind: "regular".to_string(),
+            project_id: None,
+            gizmo_id: None,
+            memory_scope: None,
             total_messages: 0,
             messages: Vec::new(),
             range: None,

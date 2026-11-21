@@ -112,10 +112,22 @@ pub fn file_fingerprint(file_path: &Path) -> AppResult<FileFingerprint> {
 
 pub fn export_fingerprint(export_item: &ExportItem) -> AppResult<ExportFingerprint> {
     let mut entries = BTreeMap::new();
-    entries.insert(
-        "conversations".to_string(),
-        file_fingerprint(&export_item.paths.conversations)?,
-    );
+    if export_item.paths.conversation_files.len() <= 1 {
+        let target = export_item
+            .paths
+            .conversation_files
+            .first()
+            .unwrap_or(&export_item.paths.conversations);
+        entries.insert("conversations".to_string(), file_fingerprint(target)?);
+    } else {
+        entries.insert(
+            "conversations".to_string(),
+            file_fingerprint(&export_item.paths.conversation_files[0])?,
+        );
+        for (idx, path) in export_item.paths.conversation_files.iter().enumerate() {
+            entries.insert(format!("conversations:{idx}"), file_fingerprint(path)?);
+        }
+    }
     entries.insert(
         "libraryFiles".to_string(),
         file_fingerprint(&export_item.paths.library_files)?,
@@ -124,6 +136,12 @@ pub fn export_fingerprint(export_item: &ExportItem) -> AppResult<ExportFingerpri
         "assetNames".to_string(),
         file_fingerprint(&export_item.paths.asset_names)?,
     );
+    if let Some(path) = &export_item.paths.group_chats {
+        entries.insert("groupChats".to_string(), file_fingerprint(path)?);
+    }
+    if let Some(path) = &export_item.paths.codex {
+        entries.insert("codex".to_string(), file_fingerprint(path)?);
+    }
     Ok(entries)
 }
 

@@ -1,7 +1,9 @@
 import React, { useCallback, useRef, useState } from "react";
-import { FileDown, FolderOpen, Settings, X } from "lucide-react";
+import { FileDown, FolderOpen, ImageDown, Settings, X } from "lucide-react";
 import { pickSourceFolder } from "../data/apiClient.js";
+import { formatBytes } from "../data/formatters.js";
 import { useDialogFocusTrap } from "../hooks/useDialogFocusTrap.js";
+import { shortProjectCode } from "../utils/projects.js";
 
 /**
  * First-run wrapper over SettingsDialog that blocks dismissal until a source folder is configured.
@@ -17,6 +19,9 @@ export function SettingsDialog({
   settings,
   sourceRoot,
   setSourceRoot,
+  projects = [],
+  projectAliasesDraft = {},
+  setProjectAliasesDraft,
   saving,
   error,
   onError,
@@ -95,6 +100,39 @@ export function SettingsDialog({
           <strong title={settings?.cacheDir ?? ""}>{settings?.cacheDir ?? "-"}</strong>
         </div>
 
+        {!onboarding && projects.length > 0 && setProjectAliasesDraft && (
+          <div className="settings-projects">
+            <span>Project names</span>
+            <p className="settings-projects-note">OpenAI exports store project IDs without titles. Assign custom display names below.</p>
+            <div className="settings-projects-list">
+              {projects.map((project) => {
+                const code = shortProjectCode(project.id);
+                const hintParts = [`${project.conversationCount} chats`];
+                if (project.sampleTitle) hintParts.push(project.sampleTitle);
+                return (
+                  <label className="settings-project-row" key={project.id} htmlFor={`project-alias-${project.id}`}>
+                    <span className="settings-project-meta" title={`${project.id} · ${hintParts.join(" · ")}`}>
+                      <strong>{code}</strong>
+                      <em>{hintParts.join(" · ")}</em>
+                    </span>
+                    <input
+                      id={`project-alias-${project.id}`}
+                      value={projectAliasesDraft[project.id] ?? ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setProjectAliasesDraft((current) => ({ ...current, [project.id]: value }));
+                      }}
+                      disabled={saving}
+                      placeholder={`Project ${code}`}
+                      maxLength={80}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {error && <p className="settings-error">{error}</p>}
 
         <footer>
@@ -133,8 +171,20 @@ export function ExportProgressDialog({ job, onOpenFolder, onClose }) {
 
   if (!job) return null;
 
+  const isImages = job.kind === "images";
   const percent = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
-  const title = job.status === "done" ? "Export complete" : job.status === "error" ? "Export failed" : "Exporting sessions...";
+  const title = isImages
+    ? job.status === "done"
+      ? "Image export complete"
+      : job.status === "error"
+        ? "Image export failed"
+        : "Exporting images..."
+    : job.status === "done"
+      ? "Export complete"
+      : job.status === "error"
+        ? "Export failed"
+        : "Exporting sessions...";
+  const Icon = isImages ? ImageDown : FileDown;
 
   return (
     <div className="export-progress-backdrop" role="presentation" onPointerDown={(event) => event.stopPropagation()}>
@@ -149,7 +199,7 @@ export function ExportProgressDialog({ job, onOpenFolder, onClose }) {
       >
         <header>
           <div>
-            <FileDown size={18} />
+            <Icon size={18} />
             <h2 id="export-progress-title">{title}</h2>
           </div>
           {job.status !== "running" && (
@@ -159,10 +209,12 @@ export function ExportProgressDialog({ job, onOpenFolder, onClose }) {
           )}
         </header>
 
+        {isImages && job.scopeLabel && <p className="export-progress-scope">{job.scopeLabel}</p>}
+
         <div
           className="progress-bar"
           role="progressbar"
-          aria-label="Session export progress"
+          aria-label={isImages ? "Image export progress" : "Session export progress"}
           aria-valuemin={0}
           aria-valuemax={job.total}
           aria-valuenow={job.completed}
@@ -171,7 +223,9 @@ export function ExportProgressDialog({ job, onOpenFolder, onClose }) {
         </div>
 
         <p className="export-progress-count">
-          {job.completed} / {job.total} sessions
+          {isImages
+            ? `${job.completed} / ${job.total} images${job.skippedMissing > 0 ? ` · ${job.skippedMissing} missing skipped` : ""}${job.status === "done" && job.totalBytes > 0 ? ` · ${formatBytes(job.totalBytes)}` : ""}`
+            : `${job.completed} / ${job.total} sessions`}
         </p>
 
         {job.error && <p className="settings-error dialog-error">{job.error}</p>}
@@ -179,7 +233,7 @@ export function ExportProgressDialog({ job, onOpenFolder, onClose }) {
 
         {(job.status === "done" || job.status === "error") && (
           <footer>
-            {job.status === "done" && (
+            {job.status === "done" && (isImages ? Boolean(job.destinationDir) : true) && (
               <button type="button" className="primary-button export-progress-open" onClick={onOpenFolder}>
                 <FolderOpen size={15} />
                 Open folder

@@ -92,6 +92,75 @@
   white-space: nowrap;
 }
 
+.detail-grid dd.detail-project-cell {
+  white-space: normal;
+  overflow: visible;
+}
+
+.inspector-project-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inspector-project-value > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--project-text);
+  font-weight: 600;
+}
+
+.inspector-project-buttons {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inspector-project-buttons button,
+.inspector-project-form button {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 580;
+  cursor: pointer;
+}
+
+.inspector-project-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 26px;
+  gap: 4px;
+  align-items: center;
+}
+
+.inspector-project-form input {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--project-border);
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.origin-project-pill {
+  border-color: var(--project-border) !important;
+  background: var(--project-soft) !important;
+  color: var(--project-text) !important;
+  font-weight: 600;
+}
+
 .utility-panel.warning header span svg {
   color: var(--amber);
 }

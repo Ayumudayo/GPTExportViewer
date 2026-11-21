@@ -11,10 +11,64 @@ const COMMANDS = {
   refreshIndex: "refresh_index",
   saveSessions: "save_sessions",
   openSavedSessionsFolder: "open_saved_sessions_folder",
-  saveOriginalImage: "save_original_image"
+  saveOriginalImage: "save_original_image",
+  exportOriginalImages: "export_original_images",
+  openExportedImagesFolder: "open_exported_images_folder"
 };
 
 const SESSION_EXPORT_PROGRESS_EVENT = "session-export-progress";
+const IMAGE_EXPORT_PROGRESS_EVENT = "image-export-progress";
+
+async function runWithProgressEvent({ listenEvent, eventName, exportId, onProgress, invokeWork }) {
+  let unlisten;
+  let lastProgress;
+  if (onProgress) {
+    unlisten = await listenEvent(eventName, (event) => {
+      const progress = event.payload;
+      if (progress?.exportId !== exportId) {
+        return;
+      }
+      lastProgress = progress;
+      onProgress(progress);
+    });
+  }
+  try {
+    const result = await invokeWork();
+    if (onProgress && !result?.canceled && result?.progress && !sameProgress(result.progress, lastProgress)) {
+      lastProgress = result.progress;
+      onProgress(result.progress);
+    }
+    return result;
+  } finally {
+    if (unlisten) {
+      try {
+        await unlisten();
+      } catch {
+        // Cleanup errors must not replace the invoke result or error.
+      }
+    }
+  }
+}
+
+function attachProjectFilterArgs(args, projectId, projectIds) {
+  const normalized = [];
+  const seen = new Set();
+  for (const raw of [...(Array.isArray(projectIds) ? projectIds : []), ...(projectId ? [projectId] : [])]) {
+    const trimmed = String(raw || "").trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      normalized.push(trimmed);
+    }
+  }
+  if (normalized.length > 0) {
+    args.projectIds = normalized;
+    if (normalized.length === 1) {
+      args.projectId = normalized[0];
+    }
+  } else if (projectId !== undefined && projectId !== "") {
+    args.projectId = projectId;
+  }
+}
 
 export function createTauriApiClient({ invoke = invokeCommand, openDialog = openFolderDialog, listenEvent = listenToEvent } = {}) {
   return {
@@ -44,16 +98,25 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
       return invoke(COMMANDS.rescanExports);
     },
 
-    async updatePreferences({ selectedExportId = undefined, windowSize = undefined } = {}) {
-      return invoke(COMMANDS.updatePreferences, { selectedExportId, windowSize });
+    async updatePreferences({ selectedExportId = undefined, windowSize = undefined, projectAliases = undefined } = {}) {
+      const args = { selectedExportId, windowSize };
+      if (projectAliases !== undefined) {
+        args.projectAliases = projectAliases;
+      }
+      return invoke(COMMANDS.updatePreferences, args);
     },
 
     async fetchStats(exportId) {
       return invoke(COMMANDS.fetchStats, { exportId });
     },
 
-    async fetchConversations({ exportId, query = "", filter = "all", cursor = 0, limit = 50 }) {
-      return normalizePagedResponse(await invoke(COMMANDS.fetchConversations, { exportId, query, filter, ...paginationArgs(cursor, limit) }));
+    async fetchConversations({ exportId, query = "", filter = "all", scope = undefined, projectId = undefined, projectIds = undefined, cursor = 0, limit = 50 }) {
+      const args = { exportId, query, filter, ...paginationArgs(cursor, limit) };
+      if (scope && scope !== "all") {
+        args.scope = scope;
+      }
+      attachProjectFilterArgs(args, projectId, projectIds);
+      return normalizePagedResponse(await invoke(COMMANDS.fetchConversations, args));
     },
 
     async fetchConversation({ exportId, conversationId, start = 0, limit = 100 }) {
@@ -69,34 +132,13 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
     },
 
     async saveSessions({ exportId, conversationIds, onProgress }) {
-      let unlisten;
-      let lastProgress;
-      if (onProgress) {
-        unlisten = await listenEvent(SESSION_EXPORT_PROGRESS_EVENT, (event) => {
-          const progress = event.payload;
-          if (progress?.exportId !== exportId) {
-            return;
-          }
-          lastProgress = progress;
-          onProgress(progress);
-        });
-      }
-      try {
-        const result = await invoke(COMMANDS.saveSessions, { exportId, conversationIds });
-        if (onProgress && result?.progress && !sameProgress(result.progress, lastProgress)) {
-          lastProgress = result.progress;
-          onProgress(result.progress);
-        }
-        return result;
-      } finally {
-        if (unlisten) {
-          try {
-            await unlisten();
-          } catch {
-            // Cleanup errors must not replace the invoke result or error.
-          }
-        }
-      }
+      return runWithProgressEvent({
+        listenEvent,
+        eventName: SESSION_EXPORT_PROGRESS_EVENT,
+        exportId,
+        onProgress,
+        invokeWork: () => invoke(COMMANDS.saveSessions, { exportId, conversationIds })
+      });
     },
 
     async openSavedSessionsFolder({ exportId }) {
@@ -105,6 +147,25 @@ export function createTauriApiClient({ invoke = invokeCommand, openDialog = open
 
     async saveOriginalImage({ exportId, fileId }) {
       return invoke(COMMANDS.saveOriginalImage, { exportId, fileId });
+    },
+
+    async exportOriginalImages({ exportId, scope, conversationIds = undefined, projectId = undefined, projectIds = undefined, onProgress = undefined }) {
+      const args = { exportId, scope };
+      if (conversationIds !== undefined) {
+        args.conversationIds = conversationIds;
+      }
+      attachProjectFilterArgs(args, projectId, projectIds);
+      return runWithProgressEvent({
+        listenEvent,
+        eventName: IMAGE_EXPORT_PROGRESS_EVENT,
+        exportId,
+        onProgress,
+        invokeWork: () => invoke(COMMANDS.exportOriginalImages, args)
+      });
+    },
+
+    async openExportedImagesFolder({ path }) {
+      return invoke(COMMANDS.openExportedImagesFolder, { path });
     },
 
     assetUrl,
@@ -162,6 +223,14 @@ export async function openSavedSessionsFolder(...args) {
 
 export async function saveOriginalImage(...args) {
   return defaultClient().saveOriginalImage(...args);
+}
+
+export async function exportOriginalImages(...args) {
+  return defaultClient().exportOriginalImages(...args);
+}
+
+export async function openExportedImagesFolder(...args) {
+  return defaultClient().openExportedImagesFolder(...args);
 }
 
 export function assetUrl(exportId, fileId) {

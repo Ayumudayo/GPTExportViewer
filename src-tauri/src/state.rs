@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -10,16 +10,21 @@ use crate::conversations::{
 use crate::errors::{io_error, AppError, AppResult};
 use crate::exports::scan_exports;
 use crate::index_store::{index_export, ConversationLru, IndexedExport};
-use crate::library::assets::resolve_asset_for_item;
+use crate::library::{
+    assets::resolve_asset_for_item,
+    export::{execute_image_export, plan_image_export, ImageExportPlan},
+};
 use crate::models::{
-    Conversation, ConversationStats, ConversationSummary, ExportItem, ExportsResponse,
-    LibraryResponseItem, LibraryStats, PagedResponse, PublicExport, PublicSettings,
-    RefreshIndexItem, RefreshIndexResponse, RescanExportsResponse, ResolvedAsset,
-    SaveOriginalImageResponse, SaveSessionsProgress, SaveSessionsResponse, SettingsResponse,
-    StatsResponse, UpdateSettingsResponse, WindowSize,
+    Conversation, ConversationStats, ConversationSummary, ExportImagesProgress,
+    ExportImagesResponse, ExportItem, ExportsResponse, LibraryResponseItem, LibraryStats,
+    PagedResponse, PublicExport, PublicSettings, RefreshIndexItem, RefreshIndexResponse,
+    RescanExportsResponse, ResolvedAsset, SaveOriginalImageResponse, SaveSessionsProgress,
+    SaveSessionsResponse, SettingsResponse, StatsResponse, UpdateSettingsResponse, WindowSize,
 };
 use crate::paging::page_indices;
-use crate::search::{filter_conversation_indices, filter_library_indices};
+use crate::search::{
+    collect_unique_project_ids, filter_conversation_indices_with_scope, filter_library_indices,
+};
 use crate::settings::{
     read_runtime_settings, resolve_source_root, write_runtime_settings, RuntimeSettings,
 };
@@ -41,6 +46,8 @@ struct StateInner {
     indexes: HashMap<String, Arc<IndexedExport>>,
     selected_export_id: Option<String>,
     window_size: Option<WindowSize>,
+    project_aliases: BTreeMap<String, String>,
+    exported_image_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +96,8 @@ impl AppState {
                 indexes: HashMap::new(),
                 selected_export_id,
                 window_size: settings.window_size,
+                project_aliases: sanitize_project_aliases(settings.project_aliases),
+                exported_image_dirs: Vec::new(),
             })),
             index_locks: Arc::new(Mutex::new(HashMap::new())),
             conversation_lru: Arc::new(Mutex::new(ConversationLru::default())),
@@ -193,6 +202,15 @@ impl AppState {
         selected_export_id: Option<String>,
         window_size: Option<WindowSize>,
     ) -> AppResult<SettingsResponse> {
+        self.update_preferences_full_response(selected_export_id, window_size, None)
+    }
+
+    pub fn update_preferences_full_response(
+        &self,
+        selected_export_id: Option<String>,
+        window_size: Option<WindowSize>,
+        project_aliases: Option<BTreeMap<String, String>>,
+    ) -> AppResult<SettingsResponse> {
         let mut inner = self.lock()?;
         if let Some(export_id) = selected_export_id {
             let trimmed = export_id.trim();
@@ -206,6 +224,20 @@ impl AppState {
         }
         if let Some(size) = valid_window_size(window_size) {
             inner.window_size = Some(size);
+        }
+        if let Some(updates) = project_aliases {
+            for (raw_key, raw_value) in updates {
+                let key = raw_key.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                let cleaned: String = raw_value.trim().chars().take(80).collect();
+                if cleaned.is_empty() {
+                    inner.project_aliases.remove(key);
+                } else {
+                    inner.project_aliases.insert(key.to_string(), cleaned);
+                }
+            }
         }
         persist_runtime_settings(&inner)?;
 
@@ -232,12 +264,54 @@ impl AppState {
         cursor: Option<usize>,
         limit: Option<usize>,
     ) -> AppResult<PagedResponse<ConversationSummary, ConversationStats>> {
+        self.get_conversations_filtered_response(export_id, query, filter, None, None, cursor, limit)
+    }
+
+    pub fn get_conversations_filtered_response(
+        &self,
+        export_id: Option<String>,
+        query: Option<String>,
+        filter: Option<String>,
+        scope: Option<String>,
+        project_id: Option<String>,
+        cursor: Option<usize>,
+        limit: Option<usize>,
+    ) -> AppResult<PagedResponse<ConversationSummary, ConversationStats>> {
+        self.get_conversations_filtered_multi_response(
+            export_id,
+            query,
+            filter,
+            scope,
+            project_id.map(|value| vec![value]),
+            cursor,
+            limit,
+        )
+    }
+
+    pub fn get_conversations_filtered_multi_response(
+        &self,
+        export_id: Option<String>,
+        query: Option<String>,
+        filter: Option<String>,
+        scope: Option<String>,
+        project_ids: Option<Vec<String>>,
+        cursor: Option<usize>,
+        limit: Option<usize>,
+    ) -> AppResult<PagedResponse<ConversationSummary, ConversationStats>> {
         let (export, indexed) = self.ensure_index(export_id, false)?;
-        let matching_indices = filter_conversation_indices(
+        let project_aliases = {
+            let inner = self.lock()?;
+            inner.project_aliases.clone()
+        };
+        let normalized_project_ids = collect_unique_project_ids(None, project_ids.as_deref());
+        let matching_indices = filter_conversation_indices_with_scope(
             &indexed.conversation_index.items,
             &indexed.conversation_search_list,
             query.as_deref(),
             filter.as_deref(),
+            scope.as_deref(),
+            &normalized_project_ids,
+            &project_aliases,
         );
         let page = page_indices(
             &matching_indices,
@@ -370,6 +444,7 @@ impl AppState {
         let export = requested_export(&inner, export_id)?;
         let public_export = PublicExport::from(&export);
         let destination_dir = inner.saved_sessions_dir.join(&export.id);
+        let project_aliases = inner.project_aliases.clone();
         drop(inner);
 
         let mut progress = SaveSessionsProgress {
@@ -379,10 +454,16 @@ impl AppState {
             current_conversation_id: None,
             current_title: None,
         };
-        let items = save_original_sessions(&export, &destination_dir, &conversation_ids, |item| {
-            progress = item.clone();
-            on_progress(item);
-        })?;
+        let items = save_original_sessions(
+            &export,
+            &destination_dir,
+            &conversation_ids,
+            &project_aliases,
+            |item| {
+                progress = item.clone();
+                on_progress(item);
+            },
+        )?;
 
         Ok(SaveSessionsResponse {
             export: public_export,
@@ -470,6 +551,168 @@ impl AppState {
             bytes_written,
             canceled: false,
         })
+    }
+
+    pub fn plan_export_original_images(
+        &self,
+        export_id: Option<String>,
+        scope: &str,
+        conversation_ids: Option<Vec<String>>,
+        project_id: Option<String>,
+    ) -> AppResult<(PublicExport, ImageExportPlan)> {
+        self.plan_export_original_images_multi(
+            export_id,
+            scope,
+            conversation_ids,
+            project_id.map(|value| vec![value]),
+        )
+    }
+
+    pub fn plan_export_original_images_multi(
+        &self,
+        export_id: Option<String>,
+        scope: &str,
+        conversation_ids: Option<Vec<String>>,
+        project_ids: Option<Vec<String>>,
+    ) -> AppResult<(PublicExport, ImageExportPlan)> {
+        let (export, _indexed, plan) = self.resolve_image_export_plan(
+            export_id,
+            scope,
+            conversation_ids.as_deref(),
+            project_ids.as_deref(),
+        )?;
+        Ok((PublicExport::from(&export), plan))
+    }
+
+    pub fn export_original_images_to_dir(
+        &self,
+        export_id: Option<String>,
+        scope: &str,
+        conversation_ids: Option<Vec<String>>,
+        project_id: Option<String>,
+        destination_root: PathBuf,
+        on_progress: impl FnMut(ExportImagesProgress),
+    ) -> AppResult<ExportImagesResponse> {
+        self.export_original_images_to_dir_multi(
+            export_id,
+            scope,
+            conversation_ids,
+            project_id.map(|value| vec![value]),
+            destination_root,
+            on_progress,
+        )
+    }
+
+    pub fn export_original_images_to_dir_multi(
+        &self,
+        export_id: Option<String>,
+        scope: &str,
+        conversation_ids: Option<Vec<String>>,
+        project_ids: Option<Vec<String>>,
+        destination_root: PathBuf,
+        on_progress: impl FnMut(ExportImagesProgress),
+    ) -> AppResult<ExportImagesResponse> {
+        let (export, indexed, plan) = self.resolve_image_export_plan(
+            export_id,
+            scope,
+            conversation_ids.as_deref(),
+            project_ids.as_deref(),
+        )?;
+        let response =
+            execute_image_export(&export, &indexed, &plan, &destination_root, on_progress)?;
+        if let Some(ref dir) = response.destination_dir {
+            let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+            let mut inner = self.lock()?;
+            inner.exported_image_dirs.retain(|existing| existing != &canonical);
+            inner.exported_image_dirs.push(canonical);
+            if inner.exported_image_dirs.len() > 32 {
+                let overflow = inner.exported_image_dirs.len() - 32;
+                inner.exported_image_dirs.drain(..overflow);
+            }
+        }
+        Ok(response)
+    }
+
+    fn resolve_image_export_plan(
+        &self,
+        export_id: Option<String>,
+        scope: &str,
+        conversation_ids: Option<&[String]>,
+        project_ids: Option<&[String]>,
+    ) -> AppResult<(ExportItem, Arc<IndexedExport>, ImageExportPlan)> {
+        let (export, indexed) = self.ensure_index(export_id, false)?;
+        let project_aliases = {
+            let inner = self.lock()?;
+            inner.project_aliases.clone()
+        };
+        let normalized_project_ids = collect_unique_project_ids(None, project_ids);
+        let plan = plan_image_export(
+            &export,
+            &indexed,
+            &project_aliases,
+            scope,
+            conversation_ids,
+            &normalized_project_ids,
+            |cid| self.load_conversation_full(&export, &indexed, cid),
+        )?;
+        Ok((export, indexed, plan))
+    }
+
+    pub fn resolve_exported_images_dir(&self, path: &str) -> AppResult<PathBuf> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::PathEscapesRoot);
+        }
+        let candidate =
+            std::fs::canonicalize(trimmed).map_err(|_| AppError::PathEscapesRoot)?;
+        if !candidate.is_dir() {
+            return Err(AppError::PathEscapesRoot);
+        }
+        let inner = self.lock()?;
+        if inner
+            .exported_image_dirs
+            .iter()
+            .any(|recorded| recorded == &candidate)
+        {
+            Ok(candidate)
+        } else {
+            Err(AppError::PathEscapesRoot)
+        }
+    }
+
+    fn load_conversation_full(
+        &self,
+        export: &ExportItem,
+        indexed: &IndexedExport,
+        conversation_id: &str,
+    ) -> AppResult<Option<Conversation>> {
+        if let Ok(mut lru) = self.conversation_lru.lock() {
+            if let Some(conv) = lru.get(&export.id, conversation_id) {
+                return Ok(Some((*conv).clone()));
+            }
+        }
+        if let Some(&(offset, len)) = indexed.conversation_offsets.get(conversation_id) {
+            if indexed.conversation_jsonl_path.is_file() {
+                let conv = Arc::new(read_conversation_from_jsonl(
+                    &indexed.conversation_jsonl_path,
+                    offset,
+                    len,
+                )?);
+                let cloned = (*conv).clone();
+                if let Ok(mut lru) = self.conversation_lru.lock() {
+                    lru.insert(export.id.clone(), conversation_id.to_string(), conv);
+                }
+                return Ok(Some(cloned));
+            }
+        }
+        if indexed.conversation_jsonl_path.is_file() {
+            return Ok(None);
+        }
+        let cache_dir = {
+            let inner = self.lock()?;
+            inner.cache_dir.clone()
+        };
+        load_conversation(export, conversation_id, &cache_dir, 0, usize::MAX)
     }
 
     fn resolve_asset_for_export(
@@ -586,6 +829,7 @@ fn persist_runtime_settings(inner: &StateInner) -> AppResult<()> {
             source_root: inner.source_root.clone(),
             selected_export_id: inner.selected_export_id.clone(),
             window_size: inner.window_size.clone(),
+            project_aliases: inner.project_aliases.clone(),
         },
     )
 }
@@ -610,7 +854,22 @@ fn public_settings(inner: &StateInner) -> PublicSettings {
         export_count: inner.exports.len(),
         selected_export_id: inner.selected_export_id.clone(),
         window_size: inner.window_size.clone(),
+        project_aliases: inner.project_aliases.clone(),
     }
+}
+
+fn sanitize_project_aliases(raw: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    raw.into_iter()
+        .filter_map(|(raw_key, raw_value)| {
+            let key = raw_key.trim();
+            let value: String = raw_value.trim().chars().take(80).collect();
+            if key.is_empty() || value.is_empty() {
+                None
+            } else {
+                Some((key.to_string(), value))
+            }
+        })
+        .collect()
 }
 
 fn public_exports(exports: &[ExportItem]) -> Vec<PublicExport> {

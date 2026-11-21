@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,8 @@ pub struct RuntimeSettings {
     pub source_root: Option<PathBuf>,
     pub selected_export_id: Option<String>,
     pub window_size: Option<WindowSize>,
+    #[serde(default)]
+    pub project_aliases: BTreeMap<String, String>,
 }
 
 pub fn read_runtime_settings(settings_path: &Path) -> AppResult<RuntimeSettings> {

@@ -1,5 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, Copy, FileDown, FileImage, Info, MessageSquare, Paperclip, Search, X } from "lucide-react";
+import {
+  ArrowDown,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  FileDown,
+  FileImage,
+  Folder,
+  ImageDown,
+  Info,
+  Loader2,
+  MessageSquare,
+  Paperclip,
+  Search,
+  Sparkles,
+  Terminal,
+  Users,
+  X
+} from "lucide-react";
 import { ESTIMATED_MESSAGE_ROW_SIZE, MESSAGE_COLLAPSE_LIMIT } from "../constants.js";
 import { copyMessageText as copyMessageTextToClipboard } from "../chatReaderHelpers.js";
 import { assetUrl } from "../data/apiClient.js";
@@ -9,7 +28,16 @@ import { countMarkdownHighlightMatches, MarkdownContent } from "../markdownRende
 import { useMeasuredVirtualList } from "../measuredVirtualList.js";
 import { findDescendantByAttr } from "../utils/layout.js";
 import { collectConversationMedia, findConversationTargetIndex } from "../utils/media.js";
+import { formatConversationKindLabel, formatProjectLabel, normalizeConversationKind } from "../utils/projects.js";
 import { LoadingState, VirtualSpacer } from "./Common.jsx";
+
+function SessionTitleIcon({ kind }) {
+  if (kind === "project") return <Folder size={18} />;
+  if (kind === "group_chat") return <Users size={18} />;
+  if (kind === "codex") return <Terminal size={18} />;
+  if (kind === "custom_gpt") return <Sparkles size={18} />;
+  return <MessageSquare size={18} />;
+}
 
 /**
  * Main conversation reader supporting measured message virtualization, find-in-chat, and target jumps.
@@ -28,7 +56,11 @@ export function ChatReader({
   onOpenImage,
   onExportSessions,
   isExportRunning,
+  onExportSessionImages,
+  isImageExportRunning = false,
   onNotify,
+  projectAliases = {},
+  onSelectProject,
   isInspectorOpen = true,
   onToggleInspector
 }) {
@@ -42,6 +74,8 @@ export function ChatReader({
   const [scrollRequestSeq, setScrollRequestSeq] = useState(0);
   const [highlightedTarget, setHighlightedTarget] = useState(/** @type {{ messageId: string, fileId: string | null } | null} */ (null));
   const [jumpScrollTick, setJumpScrollTick] = useState(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [scrollingToBottom, setScrollingToBottom] = useState(false);
   const findInputRef = useRef(/** @type {HTMLInputElement | null} */ (null));
   const copyFeedbackTimerRef = useRef(/** @type {number | null} */ (null));
   const highlightTimerRef = useRef(/** @type {number | null} */ (null));
@@ -49,6 +83,13 @@ export function ChatReader({
   const prevResetKeyRef = useRef(resetKey);
   const prevSidebarQueryRef = useRef(sidebarSearchQuery.trim());
   const prevMatchCountRef = useRef(0);
+  const pendingScrollToBottomRef = useRef(false);
+  const scrollToBottomSettleRef = useRef({ attempts: 0, stablePasses: 0 });
+  const scrollToBottomPageRef = useRef(
+    /** @type {{ requestedNextStart: number, requestedCount: number, awaitedLoading: boolean, calls: number } | null} */ (null)
+  );
+  const scrollToBottomFrameRef = useRef(/** @type {{ id: number, type: "raf" | "timeout" } | null} */ (null));
+  const hasMoreMessages = conversation?.range?.nextStart != null;
 
   const virtualMessages = useMeasuredVirtualList(messages, {
     estimatedItemSize: ESTIMATED_MESSAGE_ROW_SIZE,
@@ -69,24 +110,204 @@ export function ChatReader({
     settledPasses: 0
   });
   const messageAutoLoadRef = useAutoLoadMore({
-    hasMore: conversation?.range?.nextStart != null,
+    hasMore: hasMoreMessages,
     isLoading: isLoadingConversation || loadingMore === "messages",
     onLoadMore: onLoadMoreMessages,
     containerRef: virtualMessages.containerRef,
-    itemCount: messages.length
+    itemCount: messages.length,
+    resetKey
   });
+
+  const clearScrollToBottomSchedule = useCallback(() => {
+    const scheduled = scrollToBottomFrameRef.current;
+    if (!scheduled) return;
+    if (scheduled.type === "raf" && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(scheduled.id);
+    } else {
+      clearTimeout(scheduled.id);
+    }
+    scrollToBottomFrameRef.current = null;
+  }, []);
+
+  const cancelPendingScrollToBottom = useCallback(() => {
+    pendingScrollToBottomRef.current = false;
+    scrollToBottomSettleRef.current = { attempts: 0, stablePasses: 0 };
+    scrollToBottomPageRef.current = null;
+    clearScrollToBottomSchedule();
+    setScrollingToBottom(false);
+  }, [clearScrollToBottomSchedule]);
 
   const cancelPendingSearchScroll = useCallback(() => {
     pendingScrollRef.current = { seq: pendingScrollRef.current.seq, attempts: 0, settledPasses: 0 };
     pendingJumpScrollRef.current = { ...pendingJumpScrollRef.current, attempts: 0, settledPasses: 0 };
-  }, []);
+    cancelPendingScrollToBottom();
+  }, [cancelPendingScrollToBottom]);
+
+  const syncScrollToBottomVisibility = useCallback(() => {
+    const container = virtualMessages.containerRef.current;
+    if (!container || !conversation || messages.length === 0) {
+      setShowScrollToBottom((prev) => (prev ? false : prev));
+      return;
+    }
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const distanceFromBottom = Math.max(0, maxScrollTop - container.scrollTop);
+    const isScrollable = maxScrollTop > 8;
+    const nextVisible = Boolean(
+      scrollingToBottom || hasMoreMessages || (isScrollable && distanceFromBottom > 12)
+    );
+    setShowScrollToBottom((prev) => (prev === nextVisible ? prev : nextVisible));
+  }, [conversation, hasMoreMessages, messages.length, scrollingToBottom, virtualMessages.containerRef]);
+
+  useEffect(() => {
+    syncScrollToBottomVisibility();
+  }, [
+    syncScrollToBottomVisibility,
+    virtualMessages.beforeSize,
+    virtualMessages.afterSize,
+    virtualMessages.items.length,
+    resetKey
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    window.addEventListener("resize", syncScrollToBottomVisibility);
+    return () => window.removeEventListener("resize", syncScrollToBottomVisibility);
+  }, [syncScrollToBottomVisibility]);
+
+  const scrollToBottom = useCallback(() => {
+    const container = virtualMessages.containerRef.current;
+    if (!container || !conversation || messages.length === 0) return;
+    cancelPendingSearchScroll();
+    pendingScrollToBottomRef.current = true;
+    scrollToBottomSettleRef.current = { attempts: 10, stablePasses: 0 };
+    scrollToBottomPageRef.current = null;
+    setScrollingToBottom(true);
+    setShowScrollToBottom(true);
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = maxScrollTop;
+    virtualMessages.syncViewport?.();
+  }, [cancelPendingSearchScroll, conversation, messages.length, virtualMessages.containerRef, virtualMessages.syncViewport]);
+
+  useEffect(() => {
+    if (!scrollingToBottom || !pendingScrollToBottomRef.current) return;
+    const container = virtualMessages.containerRef.current;
+    if (!container || !conversation) {
+      cancelPendingScrollToBottom();
+      syncScrollToBottomVisibility();
+      return;
+    }
+
+    if (hasMoreMessages) {
+      if (!onLoadMoreMessages) {
+        cancelPendingScrollToBottom();
+        syncScrollToBottomVisibility();
+        return;
+      }
+      const nextStart = conversation.range.nextStart;
+      const pageTracker = scrollToBottomPageRef.current;
+      if (loadingMore === "messages") {
+        if (pageTracker && pageTracker.requestedNextStart === nextStart) {
+          pageTracker.awaitedLoading = true;
+        }
+        return;
+      }
+      if (isLoadingConversation) return;
+      const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      container.scrollTop = maxScrollTop;
+      virtualMessages.syncViewport?.();
+      const sameTarget =
+        pageTracker &&
+        pageTracker.requestedNextStart === nextStart &&
+        pageTracker.requestedCount === messages.length;
+      if (sameTarget && (pageTracker.awaitedLoading || pageTracker.calls >= 2)) {
+        // Stop auto-loading if a completed load did not advance nextStart or message count.
+        cancelPendingScrollToBottom();
+        syncScrollToBottomVisibility();
+        return;
+      }
+      scrollToBottomPageRef.current = {
+        requestedNextStart: nextStart,
+        requestedCount: messages.length,
+        awaitedLoading: false,
+        calls: sameTarget ? pageTracker.calls + 1 : 1
+      };
+      onLoadMoreMessages();
+      return;
+    }
+
+    scrollToBottomPageRef.current = null;
+    let canceled = false;
+    const scheduleNextFrame = () => {
+      if (typeof requestAnimationFrame === "function") {
+        scrollToBottomFrameRef.current = { id: requestAnimationFrame(stepToBottom), type: "raf" };
+      } else {
+        scrollToBottomFrameRef.current = { id: Number(setTimeout(stepToBottom, 0)), type: "timeout" };
+      }
+    };
+
+    const stepToBottom = () => {
+      if (canceled || !pendingScrollToBottomRef.current) return;
+      const currentContainer = virtualMessages.containerRef.current;
+      if (!currentContainer) {
+        cancelPendingScrollToBottom();
+        return;
+      }
+      const maxScrollTop = Math.max(0, currentContainer.scrollHeight - currentContainer.clientHeight);
+      const distanceFromBottom = Math.max(0, maxScrollTop - currentContainer.scrollTop);
+      if (distanceFromBottom > 2) {
+        currentContainer.scrollTop = maxScrollTop;
+        virtualMessages.syncViewport?.();
+        scrollToBottomSettleRef.current.stablePasses = 0;
+      } else {
+        scrollToBottomSettleRef.current.stablePasses += 1;
+      }
+      scrollToBottomSettleRef.current.attempts -= 1;
+
+      const afterMax = Math.max(0, currentContainer.scrollHeight - currentContainer.clientHeight);
+      const afterDist = Math.max(0, afterMax - currentContainer.scrollTop);
+      if (
+        (afterDist <= 2 && scrollToBottomSettleRef.current.stablePasses >= 2) ||
+        scrollToBottomSettleRef.current.attempts <= 0
+      ) {
+        cancelPendingScrollToBottom();
+        setShowScrollToBottom(afterMax > 8 && afterDist > 12);
+        return;
+      }
+
+      scheduleNextFrame();
+    };
+
+    scheduleNextFrame();
+
+    return () => {
+      canceled = true;
+      clearScrollToBottomSchedule();
+    };
+  }, [
+    cancelPendingScrollToBottom,
+    clearScrollToBottomSchedule,
+    conversation,
+    hasMoreMessages,
+    isLoadingConversation,
+    loadingMore,
+    messages.length,
+    onLoadMoreMessages,
+    scrollingToBottom,
+    syncScrollToBottomVisibility,
+    virtualMessages.containerRef,
+    virtualMessages.syncViewport,
+    virtualMessages.beforeSize,
+    virtualMessages.afterSize,
+    virtualMessages.offsets
+  ]);
 
   useEffect(
     () => () => {
       if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      clearScrollToBottomSchedule();
     },
-    []
+    [clearScrollToBottomSchedule]
   );
 
   const copyMessageText = useCallback(
@@ -126,6 +347,8 @@ export function ChatReader({
       setCopiedMessageId("");
       setHighlightedTarget(null);
       pendingJumpScrollRef.current = { seq: 0, messageIndex: -1, messageId: "", fileId: null, attempts: 0, settledPasses: 0 };
+      cancelPendingScrollToBottom();
+      setShowScrollToBottom(false);
       findEditedManuallyRef.current = false;
       prevMatchCountRef.current = 0;
       if (trimmedSidebarQuery) {
@@ -174,7 +397,13 @@ export function ChatReader({
     for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
       const message = messages[messageIndex];
       const parts = message?.parts ?? [];
-      const displayParts = parts.length ? parts : [{ partType: "text", text: message?.text || "(empty message)" }];
+      const renderedPartFileIds = new Set(parts.map((part) => part?.fileId).filter(Boolean));
+      const hasExtraAssetRefs = (message?.assetRefs ?? []).some((asset) => !renderedPartFileIds.has(asset.fileId));
+      const displayParts = parts.length
+        ? parts
+        : hasExtraAssetRefs && !message?.text
+          ? []
+          : [{ partType: "text", text: message?.text || "" }];
       for (let partIndex = 0; partIndex < displayParts.length; partIndex += 1) {
         const part = displayParts[partIndex];
         const partType = part?.partType ?? part?.type ?? "text";
@@ -425,6 +654,8 @@ export function ChatReader({
   );
 
   const modelLabel = conversation?.model ?? selectedSummary?.model ?? "model unknown";
+  const sessionKind = normalizeConversationKind(conversation ?? selectedSummary);
+  const sessionProjectId = conversation?.projectId ?? selectedSummary?.projectId ?? null;
   const totalMessages = conversation?.totalMessages ?? selectedSummary?.messageCount ?? messages.length;
   const messageSummary = messages.length
     ? messages.length < totalMessages
@@ -441,8 +672,20 @@ export function ChatReader({
       <header className="reader-header">
         <div>
           <div className="title-line">
-            <MessageSquare size={18} />
+            <SessionTitleIcon kind={sessionKind} />
             <h2 title={title}>{title}</h2>
+            {sessionKind === "project" && sessionProjectId ? (
+              <button
+                type="button"
+                className="reader-kind-pill project"
+                title={`Filter by project (${sessionProjectId})`}
+                onClick={() => onSelectProject?.(sessionProjectId)}
+              >
+                {formatProjectLabel(sessionProjectId, projectAliases)}
+              </button>
+            ) : (
+              sessionKind !== "regular" && <span className={`reader-kind-pill ${sessionKind}`}>{formatConversationKindLabel(sessionKind)}</span>
+            )}
             {conversation?.starred && <span className="library-pill">Starred</span>}
           </div>
           <span title={headerSubtitle}>{headerSubtitle}</span>
@@ -470,6 +713,15 @@ export function ChatReader({
             disabled={isExportRunning || (!conversation && !selectedSummary)}
           >
             <FileDown size={17} />
+          </button>
+          <button
+            type="button"
+            aria-label="Export session images"
+            title="Export original images from this session"
+            onClick={onExportSessionImages}
+            disabled={isImageExportRunning || (!conversation && !selectedSummary)}
+          >
+            <ImageDown size={17} />
           </button>
           <button
             type="button"
@@ -544,6 +796,7 @@ export function ChatReader({
       <section
         className="message-window scroll-window"
         ref={virtualMessages.containerRef}
+        onScroll={syncScrollToBottomVisibility}
         onWheel={cancelPendingSearchScroll}
         onPointerDown={cancelPendingSearchScroll}
       >
@@ -566,9 +819,13 @@ export function ChatReader({
           const isLong = (message.text?.length ?? 0) > MESSAGE_COLLAPSE_LIMIT;
           const expanded = !isLong || isMessageExpanded(message.id);
           const parts = message.parts ?? [];
-          const displayParts = parts.length ? parts : [{ partType: "text", text: message.text || "(empty message)" }];
-          const renderedPartFileIds = new Set(displayParts.map((part) => part.fileId).filter(Boolean));
+          const renderedPartFileIds = new Set(parts.map((part) => part.fileId).filter(Boolean));
           const extraAssetRefs = (message.assetRefs ?? []).filter((asset) => !renderedPartFileIds.has(asset.fileId));
+          const displayParts = parts.length
+            ? parts
+            : extraAssetRefs.length > 0 && !message.text
+              ? []
+              : [{ partType: "text", text: message.text || "(empty message)" }];
           const isCopied = copiedMessageId === message.id;
           const isJumpHighlighted = highlightedTarget?.messageId === message.id;
           const highlightedFileId = highlightedTarget?.fileId ?? "";
@@ -651,7 +908,89 @@ export function ChatReader({
           </div>
         )}
       </section>
+      {showScrollToBottom && (
+        <button
+          type="button"
+          className="scroll-to-bottom-btn"
+          aria-label={scrollingToBottom && hasMoreMessages ? "Loading bottom messages" : "Scroll to bottom"}
+          title={scrollingToBottom && hasMoreMessages ? "Loading remaining messages..." : "Scroll to bottom"}
+          onClick={scrollToBottom}
+        >
+          {scrollingToBottom && hasMoreMessages ? <Loader2 size={17} className="spin" /> : <ArrowDown size={17} />}
+        </button>
+      )}
     </main>
+  );
+}
+
+function ChatImagePart({ part, exportId, onOpenImage, highlightedFileId = "" }) {
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [exportId, part.fileId]);
+
+  const displayName = part.name ?? part.fileId;
+  const isAvailable = part.exists !== false && !loadFailed;
+  const image = {
+    fileId: part.fileId,
+    displayName,
+    mime: part.mimeType ?? part.mime ?? "image",
+    sizeLabel: "",
+    sourceState: "linked",
+    status: isAvailable ? "ready" : "missing",
+    exists: isAvailable,
+    width: part.width,
+    height: part.height
+  };
+  const isHighlightedFile = Boolean(highlightedFileId && highlightedFileId === part.fileId);
+
+  if (!isAvailable) {
+    return (
+      <div
+        className={isHighlightedFile ? "chat-image chat-image-missing jump-highlight-target" : "chat-image chat-image-missing"}
+        data-file-id={part.fileId}
+      >
+        <div className="chat-image-missing-thumb tone-amber">
+          <FileImage size={28} />
+          <span>Image file not included in export</span>
+        </div>
+        <div className="chat-image-missing-caption">
+          <FileImage size={13} />
+          <span>{displayName}</span>
+          {part.width && part.height && <em>{part.width}x{part.height}</em>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={isHighlightedFile ? "chat-image-button jump-highlight-target" : "chat-image-button"}
+      data-file-id={part.fileId}
+      onClick={() => onOpenImage?.(image)}
+      aria-label={`Open ${image.displayName}`}
+    >
+      <figure className="chat-image">
+        <img
+          src={assetUrl(exportId, part.fileId)}
+          alt={image.displayName}
+          width={part.width || undefined}
+          height={part.height || undefined}
+          loading="lazy"
+          decoding="async"
+          onError={() => setLoadFailed(true)}
+        />
+        {(part.name || part.width || part.height) && (
+          <figcaption>
+            <FileImage size={13} />
+            <span>{part.name ?? part.fileId}</span>
+            {part.width && part.height && <em>{part.width}x{part.height}</em>}
+          </figcaption>
+        )}
+      </figure>
+    </button>
   );
 }
 
@@ -659,45 +998,14 @@ function renderMessagePart(part, message, index, exportId, collapsed, onOpenImag
   const partType = part.partType ?? part.type ?? "text";
   const key = `${message.id}-${index}-${part.fileId ?? partType}`;
   if (partType === "image" && part.fileId && exportId) {
-    const image = {
-      fileId: part.fileId,
-      displayName: part.name ?? part.fileId,
-      mime: part.mimeType ?? part.mime ?? "image",
-      sizeLabel: "",
-      sourceState: "linked",
-      status: "ready",
-      exists: true,
-      width: part.width,
-      height: part.height
-    };
-    const isHighlightedFile = Boolean(highlightedFileId && highlightedFileId === part.fileId);
     return (
-      <button
-        type="button"
-        className={isHighlightedFile ? "chat-image-button jump-highlight-target" : "chat-image-button"}
-        data-file-id={part.fileId}
+      <ChatImagePart
         key={key}
-        onClick={() => onOpenImage?.(image)}
-        aria-label={`Open ${image.displayName}`}
-      >
-        <figure className="chat-image">
-          <img
-            src={assetUrl(exportId, part.fileId)}
-            alt={image.displayName}
-            width={part.width || undefined}
-            height={part.height || undefined}
-            loading="lazy"
-            decoding="async"
-          />
-          {(part.name || part.width || part.height) && (
-            <figcaption>
-              <FileImage size={13} />
-              <span>{part.name ?? part.fileId}</span>
-              {part.width && part.height && <em>{part.width}x{part.height}</em>}
-            </figcaption>
-          )}
-        </figure>
-      </button>
+        part={part}
+        exportId={exportId}
+        onOpenImage={onOpenImage}
+        highlightedFileId={highlightedFileId}
+      />
     );
   }
 

@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+fn default_conversation_kind() -> String {
+    "regular".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +30,12 @@ pub struct ExportPaths {
     pub conversations: PathBuf,
     pub library_files: PathBuf,
     pub asset_names: PathBuf,
+    #[serde(default)]
+    pub conversation_files: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_chats: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +71,8 @@ pub struct MessagePart {
     pub mime_type: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +102,14 @@ pub struct Conversation {
     pub model: Option<String>,
     pub archived: bool,
     pub starred: bool,
+    #[serde(default = "default_conversation_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gizmo_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_scope: Option<String>,
     pub total_messages: usize,
     pub messages: Vec<ConversationMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,8 +137,26 @@ pub struct ConversationSummary {
     pub model: Option<String>,
     pub archived: bool,
     pub starred: bool,
+    #[serde(default = "default_conversation_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gizmo_id: Option<String>,
     pub preview: String,
     pub last_role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub conversation_count: usize,
+    pub archived_count: usize,
+    pub latest_updated_at: Option<String>,
+    pub sample_title: Option<String>,
+    #[serde(default)]
+    pub file_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +168,18 @@ pub struct ConversationStats {
     pub archived: usize,
     pub starred: usize,
     pub max_messages: usize,
+    #[serde(default)]
+    pub regular_conversations: usize,
+    #[serde(default)]
+    pub project_conversations: usize,
+    #[serde(default)]
+    pub custom_gpt_conversations: usize,
+    #[serde(default)]
+    pub group_chat_conversations: usize,
+    #[serde(default)]
+    pub codex_conversations: usize,
+    #[serde(default)]
+    pub projects: Vec<ProjectSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,9 +208,13 @@ pub struct LibraryItem {
     pub file_ref: String,
     pub exists: bool,
     pub source_conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_conversation_title: Option<String>,
     pub source_message_id: Option<String>,
     pub source_state: String,
     pub in_chat: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,6 +286,8 @@ pub struct PublicSettings {
     pub export_count: usize,
     pub selected_export_id: Option<String>,
     pub window_size: Option<WindowSize>,
+    #[serde(default)]
+    pub project_aliases: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -348,4 +405,30 @@ pub struct SaveOriginalImageResponse {
     pub path: Option<PathBuf>,
     pub bytes_written: u64,
     pub canceled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportImagesProgress {
+    pub export_id: String,
+    pub scope: String,
+    pub total: usize,
+    pub completed: usize,
+    pub skipped_missing: usize,
+    pub current_file_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportImagesResponse {
+    pub export: PublicExport,
+    pub scope: String,
+    pub scope_label: String,
+    pub destination_dir: Option<PathBuf>,
+    pub total_candidates: usize,
+    pub exported_count: usize,
+    pub skipped_missing: usize,
+    pub total_bytes: u64,
+    pub canceled: bool,
+    pub progress: ExportImagesProgress,
 }

@@ -412,4 +412,58 @@ assert.deepEqual(
   assert.equal(allMarks[2], '<mark class="search-highlight active" data-active-match="true">', "activeMatchIndex=2 should activate the 3rd match");
 }
 
+{
+  const mediaMarkdown = [
+    "Preview needle ![Diagram needle](sandbox:/mnt/data/chart.png)",
+    "Remote ![Remote needle](https://example.com/pic.png)",
+    "Blocked ![Blocked needle](javascript:alert(1))"
+  ].join("\n\n");
+
+  const expectedCount = countMarkdownHighlightMatches(mediaMarkdown, "needle");
+  assert.equal(expectedCount, 4, "Markdown image placeholders and safe image links should align highlight counts");
+
+  const html = renderToStaticMarkup(
+    React.createElement(MarkdownContent, {
+      text: mediaMarkdown,
+      highlightQuery: "needle",
+      activeMatchIndex: 1
+    })
+  );
+  assert.equal(html.includes("sandbox:/mnt/data"), false, "Sandbox image URLs should render alt text instead of raw sandbox URIs");
+  assert.match(html, /class="md-image-placeholder">Diagram <mark[^>]*>needle<\/mark>/, "Sandbox markdown image should render clean placeholder");
+  assert.match(html, /<a class="md-link md-image-link" href="https:\/\/example\.com\/pic\.png"/, "Safe markdown image URL should render safe anchor");
+  assert.equal(/<a\b[^>]*javascript:/i.test(html), false, "Unsafe markdown image href must not render an anchor");
+  const marks = html.match(/<mark class="search-highlight(?:\s+active)?"[^>]*>/g) ?? [];
+  assert.equal(marks.length, expectedCount, "SSR mark count with markdown images must equal countMarkdownHighlightMatches");
+}
+
+{
+  const projects = await import("../src/utils/projects.js");
+  assert.equal(projects.shortProjectCode("g-p-6ad9093a00d08191b3079e881628bf24"), "6ad909");
+  assert.equal(projects.formatProjectLabel("g-p-6ad9093a00d08191b3079e881628bf24", {}), "Project 6ad909");
+  assert.equal(
+    projects.formatProjectLabel("g-p-6ad9093a00d08191b3079e881628bf24", {
+      "g-p-6ad9093a00d08191b3079e881628bf24": "Server Quiz"
+    }),
+    "Server Quiz"
+  );
+  assert.equal(projects.formatConversationKindLabel("regular"), "General");
+  assert.equal(projects.formatConversationKindLabel("project"), "Project");
+  assert.equal(projects.formatConversationKindLabel("custom_gpt"), "Custom GPT");
+  assert.equal(projects.formatConversationKindLabel("group_chat"), "Group chat");
+  assert.equal(projects.formatConversationKindLabel("codex"), "Codex");
+  assert.equal(projects.formatConversationRowBadge({ kind: "regular" }), null);
+  assert.deepEqual(
+    projects.formatConversationRowBadge(
+      { kind: "project", projectId: "g-p-6ad9093a00d08191b3079e881628bf24" },
+      { "g-p-6ad9093a00d08191b3079e881628bf24": "Server Quiz" }
+    ),
+    {
+      variant: "project",
+      label: "Server Quiz",
+      title: "Project (g-p-6ad9093a00d08191b3079e881628bf24)"
+    }
+  );
+}
+
 console.log("ui contract tests passed");

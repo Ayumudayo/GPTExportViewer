@@ -1,17 +1,24 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Check,
   ChevronDown,
   Database,
   FileDown,
+  Folder,
+  ImageDown,
   Images,
   Loader2,
   MessageSquare,
   Moon,
+  Pencil,
   RefreshCcw,
   Search,
   Settings,
+  Sparkles,
   Star,
   Sun,
+  Terminal,
+  Users,
   X
 } from "lucide-react";
 import { CONVERSATION_ROW_SIZE, LIBRARY_SIDE_ROW_SIZE } from "../constants.js";
@@ -20,7 +27,18 @@ import { useAutoLoadMore } from "../hooks/useAutoLoadMore.js";
 import { useVirtualList } from "../hooks/useVirtualList.js";
 import { scrollVirtualRowIntoView } from "../utils/layout.js";
 import { formatSourceStateLabel } from "../utils/media.js";
+import { formatConversationRowBadge, formatProjectLabel, normalizeConversationKind, shortProjectCode } from "../utils/projects.js";
 import { LoadingState, Thumb, VirtualSpacer } from "./Common.jsx";
+
+function SessionRowIcon({ item }) {
+  if (item.starred) return <Star className="starred" size={16} fill="currentColor" />;
+  const kind = normalizeConversationKind(item);
+  if (kind === "project") return <Folder className="project-row-icon" size={15} />;
+  if (kind === "group_chat") return <Users className="kind-row-icon" size={15} />;
+  if (kind === "codex") return <Terminal className="kind-row-icon" size={15} />;
+  if (kind === "custom_gpt") return <Sparkles className="kind-row-icon" size={15} />;
+  return <MessageSquare size={15} />;
+}
 
 /**
  * Left navigation sidebar containing snapshot switcher, mode toggle, filters, and virtualized lists.
@@ -38,6 +56,13 @@ export function Sidebar({
   debouncedLibraryQuery,
   conversationFilter,
   setConversationFilter,
+  conversationScope = "all",
+  setConversationScope,
+  selectedProjectIds = [],
+  onToggleProject,
+  onClearProjects,
+  projectAliases = {},
+  onSaveProjectAlias,
   libraryFilter,
   setLibraryFilter,
   conversations,
@@ -46,8 +71,11 @@ export function Sidebar({
   onSelectConversationRow,
   onOpenSessionContextMenu: handleSessionContextPopup,
   onExportSessions,
+  onExportSessionImages,
+  onExportProjectImages,
   onClearSelection,
   isExportRunning = false,
+  isImageExportRunning = false,
   library,
   selectedImageId,
   setSelectedImageId,
@@ -73,7 +101,7 @@ export function Sidebar({
   const virtualConversations = useVirtualList(conversations, {
     itemSize: CONVERSATION_ROW_SIZE,
     overscan: 8,
-    resetKey: `sessions:${selectedExportId}:${debouncedChatQuery}:${conversationFilter}`
+    resetKey: `sessions:${selectedExportId}:${debouncedChatQuery}:${conversationFilter}:${conversationScope}:${selectedProjectIds.join(",")}`
   });
   const virtualSideImages = useVirtualList(library, {
     itemSize: LIBRARY_SIDE_ROW_SIZE,
@@ -130,6 +158,25 @@ export function Sidebar({
     itemCount: library.length
   });
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState("");
+  const [projectAliasDraft, setProjectAliasDraft] = useState("");
+
+  useEffect(() => {
+    setEditingProjectId("");
+    setProjectAliasDraft("");
+  }, [selectedExportId]);
+
+  const submitProjectAlias = useCallback(
+    async (event, projectId) => {
+      event.preventDefault();
+      const ok = await onSaveProjectAlias?.(projectId, projectAliasDraft);
+      if (ok !== false) {
+        setEditingProjectId("");
+        setProjectAliasDraft("");
+      }
+    },
+    [onSaveProjectAlias, projectAliasDraft]
+  );
 
   const selectExport = useCallback(
     (exportId) => {
@@ -239,8 +286,22 @@ export function Sidebar({
     ]
   );
 
-  const hasChatFilter = Boolean(query) || conversationFilter !== "all";
+  const hasChatFilter =
+    Boolean(query) || conversationFilter !== "all" || conversationScope !== "all" || selectedProjectIds.length > 0;
   const hasLibraryFilter = Boolean(query) || libraryFilter !== "all";
+  const convStats = stats?.conversations;
+  const projects = convStats?.projects ?? [];
+  const otherConversationCount =
+    (convStats?.customGptConversations ?? 0) + (convStats?.groupChatConversations ?? 0) + (convStats?.codexConversations ?? 0);
+  const showOtherScope = otherConversationCount > 0 || conversationScope === "other";
+  const scopeOptions = [
+    ["all", "All", null],
+    ["regular", "General", convStats ? convStats.regularConversations ?? 0 : null],
+    ["project", "Projects", convStats ? convStats.projectConversations ?? 0 : null],
+    ...(showOtherScope ? [["other", "Other", convStats ? otherConversationCount : null]] : [])
+  ];
+  const showProjectGroups =
+    mode === "chat" && (conversationScope === "project" || selectedProjectIds.length > 0) && projects.length > 0;
 
   return (
     <aside className="sidebar">
@@ -357,17 +418,176 @@ export function Sidebar({
           ))}
         </div>
       ) : (
-        <div className="segmented chat-filter" aria-label="Session filter">
-          {[
-            ["all", "All"],
-            ["active", "Active"],
-            ["archived", "Archived"]
-          ].map(([value, label]) => (
-            <button key={value} className={conversationFilter === value ? "active" : ""} onClick={() => setConversationFilter(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <>
+          <div className="segmented chat-filter" aria-label="Session filter">
+            {[
+              ["all", "All"],
+              ["active", "Active"],
+              ["archived", "Archived"]
+            ].map(([value, label]) => (
+              <button key={value} className={conversationFilter === value ? "active" : ""} onClick={() => setConversationFilter(value)}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="chat-scope-filter" role="group" aria-label="Conversation type filter">
+            {scopeOptions.map(([value, label, count]) => (
+              <button
+                key={value}
+                type="button"
+                className={conversationScope === value ? "active" : ""}
+                aria-pressed={conversationScope === value}
+                onClick={() => setConversationScope?.(value)}
+              >
+                <span>{label}</span>
+                {count != null && <em className="scope-count">{count}</em>}
+              </button>
+            ))}
+          </div>
+
+          {showProjectGroups && (
+            <div className="project-group-panel" role="region" aria-label="Projects">
+              {selectedProjectIds.length > 0 && (() => {
+                const selectedProjectsLabel =
+                  selectedProjectIds.length === 1
+                    ? formatProjectLabel(selectedProjectIds[0], projectAliases)
+                    : `${selectedProjectIds.length} projects`;
+                return (
+                <div className="project-selection-bar">
+                  <span className="project-selection-count">{selectedProjectIds.length} selected</span>
+                  <div className="project-selection-actions">
+                    {onExportProjectImages && (
+                      <button
+                        type="button"
+                        className="project-batch-export-btn"
+                        aria-label="Export images from selected projects"
+                        title="Export original images from selected projects"
+                        disabled={isImageExportRunning}
+                        onClick={() => onExportProjectImages(selectedProjectIds, selectedProjectsLabel)}
+                      >
+                        <ImageDown size={11} />
+                        Images
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="project-batch-clear-btn"
+                      aria-label="Clear selected projects"
+                      title="Clear project filter"
+                      onClick={() => (onClearProjects ? onClearProjects() : onToggleProject?.(""))}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                </div>
+                );
+              })()}
+              <div className="project-chip-list">
+                <button
+                  type="button"
+                  className={selectedProjectIds.length === 0 ? "project-chip active" : "project-chip"}
+                  aria-pressed={selectedProjectIds.length === 0}
+                  onClick={() => (onClearProjects ? onClearProjects() : onToggleProject?.(""))}
+                >
+                  <span>All projects</span>
+                  <em className="scope-count">{convStats?.projectConversations ?? projects.length}</em>
+                </button>
+                {projects.map((project) => {
+                  const label = formatProjectLabel(project.id, projectAliases);
+                  const isSelected = selectedProjectIds.includes(project.id);
+                  const isEditing = editingProjectId === project.id;
+                  const tooltipParts = [`ID: ${project.id}`, `${project.conversationCount} chats`];
+                  if (project.fileCount > 0) tooltipParts.push(`${project.fileCount} files`);
+                  if (project.sampleTitle) tooltipParts.push(`Recent: ${project.sampleTitle}`);
+                  if (isEditing) {
+                    return (
+                      <form
+                        key={project.id}
+                        className="project-rename-form"
+                        onSubmit={(event) => submitProjectAlias(event, project.id)}
+                      >
+                        <input
+                          value={projectAliasDraft}
+                          onChange={(event) => setProjectAliasDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              setEditingProjectId("");
+                              setProjectAliasDraft("");
+                            }
+                          }}
+                          placeholder={`Project ${shortProjectCode(project.id)}`}
+                          aria-label={`Rename ${project.id}`}
+                          maxLength={80}
+                          autoFocus
+                        />
+                        <button type="submit" aria-label="Save project name" title="Save">
+                          <Check size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Cancel project rename"
+                          title="Cancel"
+                          onClick={() => {
+                            setEditingProjectId("");
+                            setProjectAliasDraft("");
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </form>
+                    );
+                  }
+                  return (
+                    <div key={project.id} className={isSelected ? "project-chip-row active" : "project-chip-row"}>
+                      <button
+                        type="button"
+                        className={isSelected ? "project-chip active" : "project-chip"}
+                        aria-pressed={isSelected}
+                        title={tooltipParts.join(" · ")}
+                        onClick={() => onToggleProject?.(project.id)}
+                      >
+                        <em className={isSelected ? "project-check checked" : "project-check"} aria-hidden="true">
+                          {isSelected && <Check size={10} />}
+                        </em>
+                        <Folder size={12} />
+                        <span>{label}</span>
+                        <em className="scope-count">{project.conversationCount}</em>
+                      </button>
+                      {onExportProjectImages && (
+                        <button
+                          type="button"
+                          className="project-export-images-btn"
+                          aria-label={`Export images from ${label}`}
+                          title="Export original images from this project"
+                          disabled={isImageExportRunning}
+                          onClick={() => onExportProjectImages(project.id, label)}
+                        >
+                          <ImageDown size={11} />
+                        </button>
+                      )}
+                      {onSaveProjectAlias && (
+                        <button
+                          type="button"
+                          className="project-rename-btn"
+                          aria-label={`Rename ${label}`}
+                          title="Rename project"
+                          onClick={() => {
+                            setEditingProjectId(project.id);
+                            setProjectAliasDraft(projectAliases?.[project.id] ?? "");
+                          }}
+                        >
+                          <Pencil size={11} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {mode === "chat" ? (
@@ -377,6 +597,7 @@ export function Sidebar({
             (() => {
               const isActive = item.id === selectedConversationId;
               const isExportSelected = selectedConversationIds.includes(item.id);
+              const kindBadge = formatConversationRowBadge(item, projectAliases);
               return (
                 <button
                   className={`conversation-row ${isActive ? "selected" : ""} ${isExportSelected ? "multi-selected" : ""}`}
@@ -387,12 +608,17 @@ export function Sidebar({
                   onContextMenu={(event) => handleSessionContextPopup(event, item.id)}
                 >
                   <span className="star-wrap">
-                    {item.starred ? <Star className="starred" size={16} fill="currentColor" /> : <MessageSquare size={15} />}
+                    <SessionRowIcon item={item} />
                   </span>
                   <span className="conversation-copy">
                     <strong>{item.title}</strong>
                     {item.preview && <p className="conversation-preview">{item.preview}</p>}
                     <span className="conversation-meta-line">
+                      {kindBadge && (
+                        <em className={`row-kind-badge ${kindBadge.variant}`} title={kindBadge.title}>
+                          {kindBadge.label}
+                        </em>
+                      )}
                       {item.model && <em className="row-model-badge">{item.model}</em>}
                       {item.messageCount} msgs
                       {item.attachmentCount ? ` · ${item.attachmentCount} files` : ""}
@@ -499,6 +725,18 @@ export function Sidebar({
               <FileDown size={14} />
               Export
             </button>
+            {onExportSessionImages && (
+              <button
+                type="button"
+                className="selection-export-btn"
+                title="Export original images from selected sessions"
+                onClick={onExportSessionImages}
+                disabled={isExportRunning || isImageExportRunning}
+              >
+                <ImageDown size={14} />
+                Images
+              </button>
+            )}
             <button type="button" className="selection-clear-btn" aria-label="Clear session selection" onClick={onClearSelection} disabled={isExportRunning}>
               <X size={14} />
             </button>

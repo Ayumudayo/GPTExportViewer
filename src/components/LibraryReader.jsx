@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { Images, Info, ZoomIn } from "lucide-react";
+import { ImageDown, Images, Info, ZoomIn } from "lucide-react";
 import { useAutoLoadMore } from "../hooks/useAutoLoadMore.js";
 import { useVirtualGrid } from "../hooks/useVirtualList.js";
 import { formatSourceStateLabel } from "../utils/media.js";
@@ -26,6 +26,8 @@ export function LibraryReader({
   onResetFilters,
   onLoadMoreLibrary,
   openLightbox,
+  onExportAllImages,
+  isImageExportRunning = false,
   isInspectorOpen = true,
   onToggleInspector
 }) {
@@ -102,6 +104,15 @@ export function LibraryReader({
         <div className="reader-actions">
           <button type="button" aria-label="Open selected image" onClick={() => openLightbox(image)} disabled={!image?.exists}>
             <ZoomIn size={17} />
+          </button>
+          <button
+            type="button"
+            aria-label="Export all images"
+            title="Export all original images from this export"
+            onClick={onExportAllImages}
+            disabled={isImageExportRunning || totalCount < 1}
+          >
+            <ImageDown size={17} />
           </button>
           <button
             type="button"

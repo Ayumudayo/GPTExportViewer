@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { formatChatTimestamp, formatDate, formatExportLabel, formatShortDate } from "../src/data/formatters.js";
+import { formatBytes, formatChatTimestamp, formatDate, formatExportLabel, formatShortDate } from "../src/data/formatters.js";
 
 assert.equal(
   formatExportLabel({
@@ -61,5 +61,10 @@ assert.equal(
   formatExportLabel({ name: "", modifiedAt: "1717927220000" }),
   "2024-06-09 10:00:20"
 );
+
+assert.equal(formatBytes(0), "0 B");
+assert.equal(formatBytes(512), "512 B");
+assert.equal(formatBytes(1536), "1.5 KB");
+assert.equal(formatBytes(2 * 1024 * 1024), "2.0 MB");
 
 console.log("formatter tests passed");

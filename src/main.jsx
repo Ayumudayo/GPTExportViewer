@@ -13,11 +13,14 @@ import {
   updatePreferences,
   updateSettings
 } from "./data/apiClient.js";
+import { formatExportLabel } from "./data/formatters.js";
 import { getAdjacentIndex } from "./libraryNavigation.js";
 import { useDebouncedValue } from "./hooks/useDebouncedValue.js";
+import { useImageExport } from "./hooks/useImageExport.js";
 import { useSessionExport } from "./hooks/useSessionExport.js";
 import { useWorkspaceChrome } from "./hooks/useWorkspaceChrome.js";
 import { applySavedWindowSize } from "./utils/desktopWindow.js";
+import { normalizeConversationKind } from "./utils/projects.js";
 import { mergeByKey, pickExportId } from "./utils/selection.js";
 import { ChatReader } from "./components/ChatReader.jsx";
 import { AppErrorBoundary, ResizeHandle } from "./components/Common.jsx";
@@ -50,7 +53,13 @@ function App() {
   const debouncedChatQuery = useDebouncedValue(chatQuery, 200);
   const debouncedLibraryQuery = useDebouncedValue(libraryQuery, 200);
   const [conversationFilter, setConversationFilter] = useState("all");
+  const [conversationScope, setConversationScope] = useState("all");
+  const [selectedProjectIds, setSelectedProjectIds] = useState(/** @type {string[]} */ ([]));
+  const projectKey = selectedProjectIds.join(",");
+  const [aliasVersion, setAliasVersion] = useState(0);
+  const [projectAliasesDraft, setProjectAliasesDraft] = useState(/** @type {Record<string, string>} */ ({}));
   const [libraryFilter, setLibraryFilter] = useState("all");
+  const projectAliases = settings?.projectAliases ?? {};
   const [conversations, setConversations] = useState(/** @type {any[]} */ ([]));
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [libraryContextMenu, setLibraryContextMenu] = useState(/** @type {any} */ (null));
@@ -106,10 +115,17 @@ function App() {
     ) {
       return conversations;
     }
-    const filterMatches =
+    const activeKind = normalizeConversationKind(activeConversation);
+    const statusMatches =
       conversationFilter === "all" ||
       (conversationFilter === "archived" ? Boolean(activeConversation.archived) : !activeConversation.archived);
-    if (!filterMatches) return conversations;
+    const scopeMatches =
+      conversationScope === "all" ||
+      (conversationScope === "other"
+        ? activeKind === "custom_gpt" || activeKind === "group_chat" || activeKind === "codex"
+        : activeKind === conversationScope);
+    const projectMatches = selectedProjectIds.length === 0 || selectedProjectIds.includes(activeConversation.projectId);
+    if (!statusMatches || !scopeMatches || !projectMatches) return conversations;
     const firstTextMessage = (activeConversation.messages ?? []).find((msg) => typeof msg?.text === "string" && msg.text.trim());
     const pinnedSummary = {
       id: activeConversation.id,
@@ -121,11 +137,67 @@ function App() {
       attachmentCount: 0,
       archived: Boolean(activeConversation.archived),
       starred: Boolean(activeConversation.starred),
+      kind: activeKind,
+      projectId: activeConversation.projectId ?? null,
+      gizmoId: activeConversation.gizmoId ?? null,
       preview: firstTextMessage ? firstTextMessage.text.trim().slice(0, 140) : ""
     };
     return [pinnedSummary, ...conversations];
-  }, [activeConversation, conversationFilter, conversations, debouncedChatQuery, selectedConversationId]);
+  }, [activeConversation, conversationFilter, conversationScope, conversations, debouncedChatQuery, selectedConversationId, selectedProjectIds]);
   const selectedConversationSummary = displayedConversations.find((item) => item.id === selectedConversationId);
+
+  const handleChangeConversationScope = useCallback((nextScope) => {
+    setConversationScope(nextScope);
+    if (nextScope !== "project") {
+      setSelectedProjectIds([]);
+    }
+  }, []);
+
+  const handleToggleProject = useCallback((projectId) => {
+    if (!projectId) {
+      setSelectedProjectIds([]);
+      return;
+    }
+    setMode("chat");
+    setConversationScope("project");
+    setSelectedProjectIds((current) =>
+      current.includes(projectId) ? current.filter((id) => id !== projectId) : [...current, projectId]
+    );
+  }, []);
+
+  const handleFocusProject = useCallback((projectId) => {
+    if (projectId) {
+      setMode("chat");
+      setConversationScope("project");
+      setSelectedProjectIds([projectId]);
+    } else {
+      setSelectedProjectIds([]);
+    }
+  }, []);
+
+  const saveProjectAlias = useCallback(
+    async (projectId, nextAlias) => {
+      const normalizedId = String(projectId || "").trim();
+      if (!normalizedId) return false;
+      const trimmedAlias = String(nextAlias || "").trim();
+      try {
+        const payload = await updatePreferences({ projectAliases: { [normalizedId]: trimmedAlias } });
+        if (payload?.settings) {
+          setSettings(payload.settings);
+          setProjectAliasesDraft(payload.settings.projectAliases ?? {});
+        }
+        setNotice(trimmedAlias ? "Project name saved" : "Project name reset");
+        if (debouncedChatQuery.trim()) {
+          setAliasVersion((current) => current + 1);
+        }
+        return true;
+      } catch (nextError) {
+        setError(nextError.message);
+        return false;
+      }
+    },
+    [debouncedChatQuery]
+  );
 
   const {
     selectedConversationIds,
@@ -149,12 +221,74 @@ function App() {
     setError
   });
 
+  const {
+    imageExportJob,
+    isImageExportRunning,
+    exportImages,
+    closeImageExportDialog,
+    openImageExportFolder
+  } = useImageExport({
+    selectedExportId,
+    setError,
+    onNotify: setNotice
+  });
+
+  const exportCurrentSessionImages = useCallback(() => {
+    closeSessionContextMenu();
+    const conversationIds = selectedConversationIds.length
+      ? selectedConversationIds
+      : selectedConversationId
+        ? [selectedConversationId]
+        : [];
+    if (!conversationIds.length) return;
+    const scopeLabel =
+      conversationIds.length === 1
+        ? displayedConversations.find((item) => item.id === conversationIds[0])?.title ||
+          activeConversation?.title ||
+          conversationIds[0]
+        : `${conversationIds.length} sessions`;
+    void exportImages({ scope: "conversations", conversationIds, scopeLabel });
+  }, [
+    activeConversation?.title,
+    closeSessionContextMenu,
+    displayedConversations,
+    exportImages,
+    selectedConversationId,
+    selectedConversationIds
+  ]);
+
+  const exportProjectImages = useCallback(
+    (projectIdsOrId, label) => {
+      const ids = (Array.isArray(projectIdsOrId) ? projectIdsOrId : [projectIdsOrId])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean);
+      if (!ids.length) return;
+      const scopeLabel = label || (ids.length === 1 ? ids[0] : `${ids.length} projects`);
+      void exportImages({
+        scope: "project",
+        projectId: ids.length === 1 ? ids[0] : undefined,
+        projectIds: ids,
+        scopeLabel
+      });
+    },
+    [exportImages]
+  );
+
+  const exportAllExportImages = useCallback(() => {
+    const selected = exports.find((item) => item.id === selectedExportId);
+    const scopeLabel = selected ? formatExportLabel(selected) : "Export";
+    void exportImages({ scope: "export", scopeLabel });
+  }, [exportImages, exports, selectedExportId]);
+
   latestLoadStateRef.current = {
     selectedExportId,
     sourceVersion,
+    aliasVersion,
     chatQuery: debouncedChatQuery,
     libraryQuery: debouncedLibraryQuery,
     conversationFilter,
+    conversationScope,
+    projectKey,
     libraryFilter,
     selectedConversationId,
     conversationPageCursor: conversationPage?.nextCursor ?? "",
@@ -228,7 +362,17 @@ function App() {
   useEffect(() => {
     resetSessionSelection();
     setLibraryContextMenu(null);
-  }, [mode, selectedExportId, debouncedChatQuery, conversationFilter, debouncedLibraryQuery, libraryFilter, resetSessionSelection]);
+  }, [
+    mode,
+    selectedExportId,
+    debouncedChatQuery,
+    conversationFilter,
+    conversationScope,
+    projectKey,
+    debouncedLibraryQuery,
+    libraryFilter,
+    resetSessionSelection
+  ]);
 
   useEffect(() => {
     if (!selectedExportId) return;
@@ -257,7 +401,14 @@ function App() {
     let ignore = false;
     setLoadingSessions(true);
     const doneBusy = pushBusyTask("Loading sessions");
-    fetchConversations({ exportId: selectedExportId, query: debouncedChatQuery, filter: conversationFilter, limit: 80 })
+    fetchConversations({
+      exportId: selectedExportId,
+      query: debouncedChatQuery,
+      filter: conversationFilter,
+      scope: conversationScope,
+      projectIds: selectedProjectIds,
+      limit: 80
+    })
       .then((conversationPayload) => {
         if (ignore) return;
         const nextConversations = conversationPayload.items ?? [];
@@ -283,7 +434,16 @@ function App() {
     return () => {
       ignore = true;
     };
-  }, [selectedExportId, debouncedChatQuery, conversationFilter, sourceVersion, pushBusyTask]);
+  }, [
+    selectedExportId,
+    debouncedChatQuery,
+    conversationFilter,
+    conversationScope,
+    projectKey,
+    aliasVersion,
+    sourceVersion,
+    pushBusyTask
+  ]);
 
   useEffect(() => {
     pendingLightboxIndexRef.current = -1;
@@ -359,6 +519,8 @@ function App() {
       if (resetContent) {
         pinnedConversationIdRef.current = "";
         pendingLightboxIndexRef.current = -1;
+        setConversationScope("all");
+        setSelectedProjectIds([]);
         setSelectedConversationId("");
         resetSessionSelection();
         setConversation(null);
@@ -387,6 +549,8 @@ function App() {
       pinnedConversationIdRef.current = "";
       pendingLightboxIndexRef.current = -1;
       setSelectedExportId(exportId);
+      setConversationScope("all");
+      setSelectedProjectIds([]);
       setConversations([]);
       setSelectedConversationId("");
       setConversation(null);
@@ -410,9 +574,10 @@ function App() {
 
   const openSettings = useCallback(() => {
     setSettingsDraft(settings?.sourceRoot ?? "");
+    setProjectAliasesDraft({ ...(settings?.projectAliases ?? {}) });
     setSettingsError("");
     setSettingsOpen(true);
-  }, [settings?.sourceRoot]);
+  }, [settings?.projectAliases, settings?.sourceRoot]);
 
   const closeSettings = useCallback(() => {
     if (!settingsSaving) setSettingsOpen(false);
@@ -430,12 +595,51 @@ function App() {
         setSettingsError("Source folder is required");
         return;
       }
+      const existingRoot = (settings?.sourceRoot ?? "").trim();
+      const rootChanged = onboardingOpen || !existingRoot || sourceRoot !== existingRoot;
+      const existingAliases = settings?.projectAliases ?? {};
+      const aliasKeys = new Set([
+        ...Object.keys(existingAliases),
+        ...Object.keys(projectAliasesDraft),
+        ...(stats?.conversations?.projects ?? []).map((item) => item.id)
+      ]);
+      const changedAliases = {};
+      for (const key of aliasKeys) {
+        const nextVal = (projectAliasesDraft[key] ?? "").trim();
+        const prevVal = (existingAliases[key] ?? "").trim();
+        if (nextVal !== prevVal) {
+          changedAliases[key] = nextVal;
+        }
+      }
+      const aliasesChanged = Object.keys(changedAliases).length > 0;
+      if (!rootChanged && !aliasesChanged) {
+        setSettingsOpen(false);
+        return;
+      }
+
       setSettingsSaving(true);
       setSettingsError("");
       const doneBusy = pushBusyTask("Updating settings");
       try {
-        const payload = await updateSettings({ sourceRoot });
-        applySourcePayload(payload);
+        if (rootChanged) {
+          const payload = await updateSettings({ sourceRoot });
+          if (aliasesChanged) {
+            const prefPayload = await updatePreferences({ projectAliases: changedAliases });
+            applySourcePayload(prefPayload?.settings ? { ...payload, settings: prefPayload.settings } : payload);
+          } else {
+            applySourcePayload(payload);
+          }
+        } else if (aliasesChanged) {
+          const prefPayload = await updatePreferences({ projectAliases: changedAliases });
+          if (prefPayload?.settings) {
+            setSettings(prefPayload.settings);
+            setProjectAliasesDraft(prefPayload.settings.projectAliases ?? {});
+          }
+          if (debouncedChatQuery.trim()) {
+            setAliasVersion((current) => current + 1);
+          }
+          setNotice("Project names saved");
+        }
         setError("");
         setSettingsOpen(false);
         setOnboardingOpen(false);
@@ -447,7 +651,17 @@ function App() {
         doneBusy();
       }
     },
-    [applySourcePayload, pushBusyTask, settingsDraft]
+    [
+      applySourcePayload,
+      debouncedChatQuery,
+      onboardingOpen,
+      projectAliasesDraft,
+      pushBusyTask,
+      settings?.projectAliases,
+      settings?.sourceRoot,
+      settingsDraft,
+      stats?.conversations?.projects
+    ]
   );
 
   const rescanSourceFolder = useCallback(async () => {
@@ -548,13 +762,15 @@ function App() {
   const loadMoreConversations = useCallback(async () => {
     const cursor = conversationPage?.nextCursor;
     if (!selectedExportId || !cursor) return;
-    const loadKey = `sessions:${selectedExportId}:${sourceVersion}:${debouncedChatQuery}:${conversationFilter}:${cursor}`;
+    const loadKey = `sessions:${selectedExportId}:${sourceVersion}:${aliasVersion}:${debouncedChatQuery}:${conversationFilter}:${conversationScope}:${projectKey}:${cursor}`;
     if (!beginLoadingMore("sessions", loadKey)) return;
     try {
       const payload = await fetchConversations({
         exportId: selectedExportId,
         query: debouncedChatQuery,
         filter: conversationFilter,
+        scope: conversationScope,
+        projectIds: selectedProjectIds,
         cursor,
         limit: conversationPage.limit ?? 80
       });
@@ -562,8 +778,11 @@ function App() {
       if (
         latest.selectedExportId !== selectedExportId ||
         latest.sourceVersion !== sourceVersion ||
+        latest.aliasVersion !== aliasVersion ||
         latest.chatQuery !== debouncedChatQuery ||
         latest.conversationFilter !== conversationFilter ||
+        latest.conversationScope !== conversationScope ||
+        latest.projectKey !== projectKey ||
         latest.conversationPageCursor !== cursor
       ) {
         return;
@@ -575,7 +794,19 @@ function App() {
     } finally {
       finishLoadingMore("sessions", loadKey);
     }
-  }, [beginLoadingMore, conversationFilter, conversationPage, debouncedChatQuery, finishLoadingMore, selectedExportId, sourceVersion]);
+  }, [
+    aliasVersion,
+    beginLoadingMore,
+    conversationFilter,
+    conversationPage,
+    conversationScope,
+    debouncedChatQuery,
+    finishLoadingMore,
+    projectKey,
+    selectedExportId,
+    selectedProjectIds,
+    sourceVersion
+  ]);
 
   const loadMoreLibrary = useCallback(async () => {
     const cursor = libraryPage?.nextCursor;
@@ -814,11 +1045,13 @@ function App() {
       if (!targetConversationId) return;
       if (mode !== "chat" || targetConversationId !== selectedConversationId) {
         pinnedConversationIdRef.current = targetConversationId;
-        if (debouncedChatQuery !== "" || conversationFilter !== "all") {
+        if (debouncedChatQuery !== "" || conversationFilter !== "all" || conversationScope !== "all" || selectedProjectIds.length > 0) {
           setLoadingSessions(true);
         }
         setChatQuery("");
         setConversationFilter("all");
+        setConversationScope("all");
+        setSelectedProjectIds([]);
         setSelectedConversationId(targetConversationId);
         setSidebarSessionJumpSeq((current) => current + 1);
         setMode("chat");
@@ -838,7 +1071,7 @@ function App() {
         }));
       }
     },
-    [conversationFilter, debouncedChatQuery, mode, selectedConversationId, setInspectorDrawerOpen]
+    [conversationFilter, conversationScope, debouncedChatQuery, mode, selectedConversationId, selectedProjectIds.length, setInspectorDrawerOpen]
   );
 
   const openSourceSession = useCallback(
@@ -869,6 +1102,8 @@ function App() {
     if (mode === "chat") {
       setChatQuery("");
       setConversationFilter("all");
+      setConversationScope("all");
+      setSelectedProjectIds([]);
     } else {
       setLibraryQuery("");
       setLibraryFilter("all");
@@ -902,6 +1137,13 @@ function App() {
         debouncedLibraryQuery={debouncedLibraryQuery}
         conversationFilter={conversationFilter}
         setConversationFilter={setConversationFilter}
+        conversationScope={conversationScope}
+        setConversationScope={handleChangeConversationScope}
+        selectedProjectIds={selectedProjectIds}
+        onToggleProject={handleToggleProject}
+        onClearProjects={() => setSelectedProjectIds([])}
+        projectAliases={projectAliases}
+        onSaveProjectAlias={saveProjectAlias}
         libraryFilter={libraryFilter}
         setLibraryFilter={setLibraryFilter}
         conversations={displayedConversations}
@@ -910,8 +1152,11 @@ function App() {
         onSelectConversationRow={selectConversationRow}
         onOpenSessionContextMenu={openSessionContextMenu}
         onExportSessions={exportSelectedSessions}
+        onExportSessionImages={exportCurrentSessionImages}
+        onExportProjectImages={exportProjectImages}
         onClearSelection={clearConversationSelection}
         isExportRunning={isSessionExportRunning}
+        isImageExportRunning={isImageExportRunning}
         library={library}
         selectedImageId={selectedImageId}
         setSelectedImageId={selectLibrarySideImage}
@@ -952,7 +1197,11 @@ function App() {
           onOpenImage={openImagePreview}
           onExportSessions={exportSelectedSessions}
           isExportRunning={isSessionExportRunning}
+          onExportSessionImages={exportCurrentSessionImages}
+          isImageExportRunning={isImageExportRunning}
           onNotify={setNotice}
+          projectAliases={projectAliases}
+          onSelectProject={handleFocusProject}
           isInspectorOpen={isInspectorOpen}
           onToggleInspector={toggleInspector}
         />
@@ -978,6 +1227,8 @@ function App() {
             const resolvedImage = targetImage ?? selectedImage;
             if (resolvedImage?.exists) openImagePreview(resolvedImage);
           }}
+          onExportAllImages={exportAllExportImages}
+          isImageExportRunning={isImageExportRunning}
           isInspectorOpen={isInspectorOpen}
           onToggleInspector={toggleInspector}
         />
@@ -1000,10 +1251,17 @@ function App() {
         selectedSessionCount={selectedConversationIds.length || (selectedConversationId ? 1 : 0)}
         onExportSessions={exportSelectedSessions}
         isExportRunning={isSessionExportRunning}
+        onExportAllImages={exportAllExportImages}
+        onExportSessionImages={exportCurrentSessionImages}
+        onExportProjectImages={exportProjectImages}
+        isImageExportRunning={isImageExportRunning}
         onOpenSourceSession={openSourceSession}
         onJumpToMessage={jumpToConversationTarget}
         onPreviewImage={openImagePreview}
         onSaveImage={saveImage}
+        projectAliases={projectAliases}
+        onSelectProject={handleFocusProject}
+        onSaveProjectAlias={saveProjectAlias}
       />
 
       {error && (
@@ -1028,6 +1286,9 @@ function App() {
           settings={settings}
           sourceRoot={settingsDraft}
           setSourceRoot={setSettingsDraft}
+          projects={stats?.conversations?.projects ?? []}
+          projectAliasesDraft={projectAliasesDraft}
+          setProjectAliasesDraft={setProjectAliasesDraft}
           saving={settingsSaving}
           error={settingsError}
           onError={setSettingsError}
@@ -1053,6 +1314,8 @@ function App() {
         menu={sessionContextMenu}
         count={selectedConversationIds.length}
         onExport={exportSelectedSessions}
+        onExportImages={exportCurrentSessionImages}
+        isImageExportRunning={isImageExportRunning}
         onClose={closeSessionContextMenu}
       />
 
@@ -1064,7 +1327,11 @@ function App() {
         onClose={closeLibraryContextMenu}
       />
 
-      <ExportProgressDialog job={sessionExportJob} onOpenFolder={openExportFolder} onClose={closeExportProgressDialog} />
+      <ExportProgressDialog
+        job={imageExportJob ?? sessionExportJob}
+        onOpenFolder={imageExportJob ? openImageExportFolder : openExportFolder}
+        onClose={imageExportJob ? closeImageExportDialog : closeExportProgressDialog}
+      />
 
       {lightboxOpen && activeLightboxImage && (
         <ImageLightbox

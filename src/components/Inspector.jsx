@@ -1,7 +1,24 @@
-import React, { useMemo } from "react";
-import { AlertTriangle, ExternalLink, FileDown, FileImage, Images, Info, MessageSquare, Paperclip, Tag, X, ZoomIn } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  Check,
+  ExternalLink,
+  FileDown,
+  FileImage,
+  Folder,
+  ImageDown,
+  Images,
+  Info,
+  MessageSquare,
+  Paperclip,
+  Pencil,
+  Tag,
+  X,
+  ZoomIn
+} from "lucide-react";
 import { formatDate, formatExportLabel, roleLabel } from "../data/formatters.js";
 import { collectConversationMedia, formatImageResolution, formatSourceStateLabel } from "../utils/media.js";
+import { formatConversationKindLabel, formatProjectLabel, normalizeConversationKind, shortProjectCode } from "../utils/projects.js";
 import { Panel, Thumb } from "./Common.jsx";
 
 /**
@@ -20,10 +37,17 @@ export function Inspector({
   selectedSessionCount = 0,
   onExportSessions,
   isExportRunning = false,
+  onExportAllImages,
+  onExportSessionImages,
+  onExportProjectImages,
+  isImageExportRunning = false,
   onOpenSourceSession,
   onJumpToMessage,
   onPreviewImage,
-  onSaveImage
+  onSaveImage,
+  projectAliases = {},
+  onSelectProject,
+  onSaveProjectAlias
 }) {
   const exportWarnings = selectedExport?.warnings ?? [];
   const warningMessages = [];
@@ -36,6 +60,17 @@ export function Inspector({
   const sessionMessageCount = conversation?.totalMessages ?? selectedSummary?.messageCount ?? 0;
   const sessionModelValue = conversation?.model ?? selectedSummary?.model ?? "-";
   const sessionUpdatedAt = conversation?.updatedAt ?? selectedSummary?.updatedAt;
+  const sessionKind = normalizeConversationKind(conversation ?? selectedSummary);
+  const sessionProjectId = conversation?.projectId ?? selectedSummary?.projectId ?? null;
+  const sessionGizmoId = conversation?.gizmoId ?? selectedSummary?.gizmoId ?? null;
+  const [editingProject, setEditingProject] = useState(false);
+  const [projectAliasDraft, setProjectAliasDraft] = useState("");
+
+  useEffect(() => {
+    setEditingProject(false);
+    setProjectAliasDraft("");
+  }, [sessionIdValue, sessionProjectId]);
+
   const sessionMedia = useMemo(
     () => (mode === "chat" ? collectConversationMedia(conversation) : { images: [], files: [] }),
     [conversation, mode]
@@ -64,15 +99,122 @@ export function Inspector({
               <dd>
                 {stats.conversations?.totalConversations ?? 0} chats · {stats.library?.totalImages ?? 0} images
               </dd>
+              {(stats.conversations?.projectConversations ?? 0) > 0 && (
+                <>
+                  <dt>Projects</dt>
+                  <dd>
+                    {stats.conversations.projects?.length ?? 0} projects · {stats.conversations.projectConversations} chats
+                  </dd>
+                </>
+              )}
             </>
           )}
         </dl>
+        {onExportAllImages && (
+          <div className="inspector-actions">
+            <button
+              type="button"
+              onClick={onExportAllImages}
+              disabled={isImageExportRunning || !selectedExport || (stats?.library?.totalImages ?? 0) < 1}
+            >
+              <ImageDown size={15} />
+              Export all images
+            </button>
+          </div>
+        )}
       </Panel>
 
       {mode === "chat" ? (
         <>
           <Panel title="Session details" icon={<MessageSquare size={17} />}>
             <dl className="detail-grid">
+              <dt>Type</dt>
+              <dd>{formatConversationKindLabel(sessionKind)}</dd>
+              {sessionProjectId && (
+                <>
+                  <dt>Project</dt>
+                  <dd className="detail-project-cell">
+                    {editingProject ? (
+                      <form
+                        className="inspector-project-form"
+                        onSubmit={async (event) => {
+                          event.preventDefault();
+                          const ok = await onSaveProjectAlias?.(sessionProjectId, projectAliasDraft);
+                          if (ok !== false) setEditingProject(false);
+                        }}
+                      >
+                        <input
+                          value={projectAliasDraft}
+                          onChange={(event) => setProjectAliasDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              setEditingProject(false);
+                            }
+                          }}
+                          placeholder={`Project ${shortProjectCode(sessionProjectId)}`}
+                          aria-label={`Project name for ${sessionProjectId}`}
+                          maxLength={80}
+                          autoFocus
+                        />
+                        <button type="submit" aria-label="Save project name" title="Save">
+                          <Check size={13} />
+                        </button>
+                        <button type="button" aria-label="Cancel project rename" title="Cancel" onClick={() => setEditingProject(false)}>
+                          <X size={13} />
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="inspector-project-value">
+                        <span title={sessionProjectId}>{formatProjectLabel(sessionProjectId, projectAliases)}</span>
+                        <div className="inspector-project-buttons">
+                          {onExportProjectImages && (
+                            <button
+                              type="button"
+                              aria-label="Export project images"
+                              title={`Export original images from ${formatProjectLabel(sessionProjectId, projectAliases)}`}
+                              disabled={isImageExportRunning}
+                              onClick={() => onExportProjectImages(sessionProjectId, formatProjectLabel(sessionProjectId, projectAliases))}
+                            >
+                              <ImageDown size={12} />
+                            </button>
+                          )}
+                          {onSaveProjectAlias && (
+                            <button
+                              type="button"
+                              aria-label="Rename project"
+                              title="Rename project"
+                              onClick={() => {
+                                setProjectAliasDraft(projectAliases?.[sessionProjectId] ?? "");
+                                setEditingProject(true);
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                          )}
+                          {onSelectProject && (
+                            <button
+                              type="button"
+                              aria-label="Filter by project"
+                              title={`Show all chats in ${formatProjectLabel(sessionProjectId, projectAliases)}`}
+                              onClick={() => onSelectProject(sessionProjectId)}
+                            >
+                              <Folder size={12} />
+                              Filter
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </dd>
+                </>
+              )}
+              {sessionKind === "custom_gpt" && sessionGizmoId && (
+                <>
+                  <dt>GPT ID</dt>
+                  <dd title={sessionGizmoId}>{sessionGizmoId}</dd>
+                </>
+              )}
               <dt>Session ID</dt>
               <dd title={sessionIdValue}>{sessionIdValue}</dd>
               <dt>Messages</dt>
@@ -128,6 +270,14 @@ export function Inspector({
                   </div>
                 ))}
               </div>
+              {onExportSessionImages && (
+                <div className="inspector-actions">
+                  <button type="button" onClick={onExportSessionImages} disabled={isImageExportRunning}>
+                    <ImageDown size={15} />
+                    Export session images ({sessionMedia.images.length})
+                  </button>
+                </div>
+              )}
             </Panel>
           )}
           {sessionMedia.files.length > 0 && (
@@ -194,6 +344,11 @@ export function Inspector({
           <Panel title="Origin" icon={<Tag size={17} />}>
             <div className="tag-list">
               <span title={image?.sourceState ?? ""}>{image?.sourceState ? formatSourceStateLabel(image.sourceState) : "None"}</span>
+              {image?.projectId && (
+                <span className="origin-project-pill" title={`Project (${image.projectId})`}>
+                  {formatProjectLabel(image.projectId, projectAliases)}
+                </span>
+              )}
               <span title={image?.sourceConversationTitle || image?.sourceConversationId || ""}>
                 {image?.sourceConversationTitle || image?.sourceConversationId || "No linked session"}
               </span>

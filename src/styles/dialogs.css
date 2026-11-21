@@ -12,15 +12,22 @@
 .session-context-menu {
   position: fixed;
   z-index: 70;
-  min-width: 236px;
+  min-width: 248px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   gap: 4px;
+  align-items: start;
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-raised);
   box-shadow: var(--shadow);
+}
+
+.session-context-menu-actions {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .session-context-menu button {
@@ -45,7 +52,12 @@
   outline: 0;
 }
 
-.session-context-menu button:first-child {
+.session-context-menu button:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.session-context-menu-actions button:first-child {
   color: var(--green-dark);
 }
 
@@ -162,9 +174,18 @@
 }
 
 .export-progress-count,
-.export-progress-path {
+.export-progress-path,
+.export-progress-scope {
   margin: 0;
   font-size: 13px;
+}
+
+.export-progress-scope {
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .export-progress-count {
@@ -280,6 +301,74 @@
   white-space: nowrap;
   font-size: 13px;
   font-weight: 560;
+}
+
+.settings-projects {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-projects > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-projects-note {
+  margin: 0;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-projects-list {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.settings-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 210px);
+  gap: 10px;
+  align-items: center;
+}
+
+.settings-project-meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-project-meta strong {
+  font-size: 12.5px;
+  color: var(--project-text);
+  font-family: var(--font-mono);
+}
+
+.settings-project-meta em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.settings-project-row input {
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 12.5px;
 }
 
 .settings-error {

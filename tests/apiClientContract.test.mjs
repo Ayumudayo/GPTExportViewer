@@ -9,6 +9,8 @@ assert.equal(apiClient.includes("httpApiClient"), false, "Public API client shou
 assert.equal(apiClient.includes("saveSessions"), true, "Public API client should expose saveSessions");
 assert.equal(apiClient.includes("openSavedSessionsFolder"), true, "Public API client should expose openSavedSessionsFolder");
 assert.equal(apiClient.includes("saveOriginalImage"), true, "Public API client should expose original image saving");
+assert.equal(apiClient.includes("exportOriginalImages"), true, "Public API client should expose batch original image exporting");
+assert.equal(apiClient.includes("openExportedImagesFolder"), true, "Public API client should expose opening exported image folders");
 assert.equal(apiClient.includes("rescanExports"), true, "Public API client should expose source folder rescanning");
 assert.equal(apiClient.includes("updatePreferences"), true, "Public API client should expose lightweight app preference updates");
 
@@ -25,12 +27,15 @@ for (const command of [
   "refresh_index",
   "save_sessions",
   "open_saved_sessions_folder",
-  "save_original_image"
+  "save_original_image",
+  "export_original_images",
+  "open_exported_images_folder"
 ]) {
   assert.equal(tauriClient.includes(command), true, `Tauri transport should invoke ${command}`);
 }
 
 assert.equal(tauriClient.includes("session-export-progress"), true, "Tauri transport should listen for session export progress");
+assert.equal(tauriClient.includes("image-export-progress"), true, "Tauri transport should listen for image export progress");
 assert.equal(tauriClient.includes("@tauri-apps/plugin-dialog"), true, "Tauri transport should use the native dialog plugin");
 assert.equal(tauriClient.includes("http://gpt-export-asset.localhost/library/"), true, "Tauri asset URLs should use the Windows WebView2 protocol bridge");
 assert.equal(tauriClient.includes("selectedPath"), true, "Tauri folder picker should return selectedPath");
@@ -81,7 +86,24 @@ assert.deepEqual(await client.fetchConversations({ exportId: "exp", limit: 10 })
   page: { cursor: 0, limit: 10, total: 0, nextCursor: null },
   stats: {}
 });
-assert.equal(calls.some((call) => call.command === "get_conversations"), true);
+const defaultConvCall = calls.findLast((call) => call.command === "get_conversations");
+assert.equal("scope" in defaultConvCall.args, false, "Default fetchConversations should omit unset scope");
+assert.equal("projectId" in defaultConvCall.args, false, "Default fetchConversations should omit unset projectId");
+await client.fetchConversations({ exportId: "exp", filter: "active", scope: "project", projectId: "g-p-123", limit: 20 });
+const projectConvCall = calls.findLast((call) => call.command === "get_conversations");
+assert.equal(projectConvCall.args.scope, "project");
+assert.equal(projectConvCall.args.projectId, "g-p-123");
+assert.deepEqual(projectConvCall.args.projectIds, ["g-p-123"]);
+await client.fetchConversations({
+  exportId: "exp",
+  filter: "all",
+  scope: "project",
+  projectIds: ["g-p-123", "g-p-456", "g-p-123"],
+  limit: 20
+});
+const multiProjectConvCall = calls.findLast((call) => call.command === "get_conversations");
+assert.deepEqual(multiProjectConvCall.args.projectIds, ["g-p-123", "g-p-456"]);
+assert.equal("projectId" in multiProjectConvCall.args, false, "Multi-project filter should not emit ambiguous single projectId");
 await client.fetchLibrary({ exportId: "exp", cursor: "12", limit: "10" });
 const libraryCall = calls.findLast((call) => call.command === "get_library");
 assert.equal(libraryCall.args.cursor, 12);
@@ -114,6 +136,9 @@ assert.equal(calls.some((call) => call.command === "rescan_exports"), true);
 await client.updatePreferences({ selectedExportId: "exp", windowSize: { width: 1280, height: 840 } });
 const preferenceCall = calls.findLast((call) => call.command === "update_preferences");
 assert.deepEqual(preferenceCall.args, { selectedExportId: "exp", windowSize: { width: 1280, height: 840 } });
+await client.updatePreferences({ projectAliases: { "g-p-123": "Server Quiz" } });
+const aliasPreferenceCall = calls.findLast((call) => call.command === "update_preferences");
+assert.deepEqual(aliasPreferenceCall.args.projectAliases, { "g-p-123": "Server Quiz" });
 
 const fallbackProgress = [];
 const fallbackClient = createTauriApiClient({
@@ -162,5 +187,54 @@ await assert.rejects(
     return true;
   }
 );
+
+const imageExportProgress = [];
+const imageExportClient = createTauriApiClient({
+  invoke: async (command, args) => {
+    calls.push({ command, args });
+    if (command === "export_original_images") {
+      return {
+        export: { id: "exp" },
+        scope: args.scope,
+        scopeLabel: "Server Quiz",
+        destinationDir: "C:\\Out\\Server Quiz-images",
+        totalCandidates: 2,
+        exportedCount: 2,
+        skippedMissing: 0,
+        totalBytes: 2048,
+        canceled: false,
+        progress: { exportId: "exp", scope: args.scope, total: 2, completed: 2, skippedMissing: 0, currentFileName: "img.png" }
+      };
+    }
+    return { path: args.path };
+  },
+  listenEvent: async (eventName, handler) => {
+    events.push(eventName);
+    handler({ payload: { exportId: "other", total: 2, completed: 1 } });
+    handler({ payload: { exportId: "exp", total: 2, completed: 1, skippedMissing: 0, currentFileName: "a.png" } });
+    return () => events.push("image-unlisten");
+  }
+});
+const exportedImages = await imageExportClient.exportOriginalImages({
+  exportId: "exp",
+  scope: "project",
+  projectId: "g-p-alpha",
+  onProgress: (p) => imageExportProgress.push(p)
+});
+assert.equal(exportedImages.exportedCount, 2);
+assert.equal(events.includes("image-export-progress"), true);
+assert.equal(events.includes("image-unlisten"), true);
+assert.equal(imageExportProgress.length, 2);
+await imageExportClient.exportOriginalImages({
+  exportId: "exp",
+  scope: "project",
+  projectIds: ["g-p-alpha", "g-p-beta"]
+});
+const multiImgExportCall = calls.findLast((c) => c.command === "export_original_images");
+assert.deepEqual(multiImgExportCall.args.projectIds, ["g-p-alpha", "g-p-beta"]);
+assert.equal("projectId" in multiImgExportCall.args, false);
+await imageExportClient.openExportedImagesFolder({ path: "C:\\Out\\Server Quiz-images" });
+const openImgFolderCall = calls.findLast((c) => c.command === "open_exported_images_folder");
+assert.equal(openImgFolderCall.args.path, "C:\\Out\\Server Quiz-images");
 
 console.log("api client contract tests passed");

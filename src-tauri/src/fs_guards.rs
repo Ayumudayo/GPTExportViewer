@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use unicode_normalization::UnicodeNormalization;
@@ -124,6 +125,134 @@ pub fn safe_cache_name(value: &str) -> String {
     } else {
         output
     }
+}
+
+pub fn is_windows_reserved_stem(stem: &str) -> bool {
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+pub fn safe_folder_segment(raw: &str, fallback: &str, max_chars: usize) -> String {
+    let base = safe_cache_name(raw);
+    let cleaned = if base == "untitled" || base.is_empty() {
+        safe_cache_name(fallback)
+    } else {
+        base
+    };
+    let truncated: String = cleaned.chars().take(max_chars.max(1)).collect();
+    let trimmed = truncated.trim_matches(|ch: char| ch == '_' || ch == '.' || ch == ' ');
+    if trimmed.is_empty() || is_windows_reserved_stem(trimmed) {
+        "export".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn iso_date_prefix(iso: Option<&str>) -> Option<&str> {
+    let trimmed = iso?.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    if !bytes[..10]
+        .iter()
+        .enumerate()
+        .all(|(idx, byte)| idx == 4 || idx == 7 || byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(&trimmed[..10])
+}
+
+pub fn session_folder_base(
+    title: &str,
+    fallback_id: &str,
+    primary_iso: Option<&str>,
+    secondary_iso: Option<&str>,
+) -> String {
+    let title_seg = safe_folder_segment(title, fallback_id, 48);
+    match iso_date_prefix(primary_iso).or_else(|| iso_date_prefix(secondary_iso)) {
+        Some(date) => format!("{date}_{title_seg}"),
+        None => title_seg,
+    }
+}
+
+pub fn resolve_project_label(project_id: &str, project_aliases: &BTreeMap<String, String>) -> String {
+    if let Some(alias) = project_aliases
+        .get(project_id)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return alias.to_string();
+    }
+    let trimmed = project_id.trim();
+    let stripped = trimmed
+        .strip_prefix("g-p-")
+        .or_else(|| trimmed.strip_prefix("g-"))
+        .unwrap_or(trimmed);
+    let short: String = stripped.chars().take(6).collect();
+    if short.is_empty() {
+        "Project".to_string()
+    } else {
+        format!("Project {short}")
+    }
+}
+
+pub fn build_project_folder_map(
+    project_ids: &[String],
+    project_aliases: &BTreeMap<String, String>,
+) -> HashMap<String, String> {
+    let unique: BTreeSet<&str> = project_ids
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect();
+    let mut used_lower = HashSet::with_capacity(unique.len());
+    let mut map = HashMap::with_capacity(unique.len());
+    for pid in unique {
+        let label = resolve_project_label(pid, project_aliases);
+        let base = safe_folder_segment(&label, pid, 48);
+        let mut attempt = 1usize;
+        let chosen = loop {
+            let candidate = if attempt == 1 {
+                base.clone()
+            } else {
+                format!("{base} ({attempt})")
+            };
+            let lower = candidate.to_ascii_lowercase();
+            if used_lower.insert(lower) {
+                break candidate;
+            }
+            attempt += 1;
+        };
+        map.insert(pid.to_string(), chosen);
+    }
+    map
 }
 
 #[cfg(windows)]
